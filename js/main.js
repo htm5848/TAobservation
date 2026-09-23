@@ -413,12 +413,30 @@ function attachPodiumDrag(node, pos, onTap) {
   node.addEventListener("pointercancel", () => { drag = null; });
 }
 
+/* Find whichever table's center is spatially closest to a point (in % of
+   canvas), regardless of distance — used so every logged position (table
+   tap, podium tap, or open-floor tap) always has a "nearest table" on
+   record for the CSV, not just taps that land on/near a table. */
+function nearestTableToPct(xPct, yPct, rect) {
+  if (!mapLayout.tables.length) return null;
+  let best = null, bestDist = Infinity;
+  mapLayout.tables.forEach(t => {
+    const dx = (xPct - (t.x + t.w / 2)) / 100 * rect.width;
+    const dy = (yPct - (t.y + t.h / 2)) / 100 * rect.height;
+    const d = Math.hypot(dx, dy);
+    if (d < bestDist) { bestDist = d; best = t; }
+  });
+  return best ? { id: best.id, dist: bestDist } : null;
+}
+
 /* Tap on a table or the podium: log the exact center of that object. */
 function logAt(xPct, yPct, desc, near) {
   if (!obsSession) return;
   const x = Math.round(xPct), y = Math.round(yPct);
+  const rect = $("obs-canvas").getBoundingClientRect();
+  const nearestTable = nearestTableToPct(x, y, rect);
   drawDot(x, y, obsSession.positions.length + 1);
-  addPositionLog(desc, near, x, y);
+  addPositionLog(desc, near, x, y, nearestTable ? nearestTable.id : null);
 }
 
 /* Tap on open floor: log where they tapped, or "Near Table N" if close to one. */
@@ -429,19 +447,13 @@ function logObsPosition(event) {
   const xPct = ((event.clientX - rect.left) / rect.width) * 100;
   const yPct = ((event.clientY - rect.top) / rect.height) * 100;
 
-  let nearest = null, minDist = Infinity;
-  mapLayout.tables.forEach(t => {
-    const dx = (xPct - (t.x + t.w / 2)) / 100 * rect.width;
-    const dy = (yPct - (t.y + t.h / 2)) / 100 * rect.height;
-    const d = Math.hypot(dx, dy);
-    if (d < minDist) { minDist = d; nearest = t; }
-  });
-  const near = minDist < 55 ? nearest : null;
+  const nearestTable = nearestTableToPct(xPct, yPct, rect);
+  const near = nearestTable && nearestTable.dist < 55 ? nearestTable : null;
   const x = Math.round(xPct), y = Math.round(yPct);
   const desc = near ? `Near Table ${near.id}` : `Open area (${x}%, ${y}%)`;
 
   drawDot(x, y, obsSession.positions.length + 1);
-  addPositionLog(desc, near ? `Table ${near.id}` : "", x, y);
+  addPositionLog(desc, near ? `Table ${near.id}` : "", x, y, nearestTable ? nearestTable.id : null);
 }
 
 function drawDot(xPct, yPct, num) {
@@ -463,11 +475,12 @@ function redrawDots() {
   obsSession.positions.forEach((p, i) => drawDot(p.x, p.y, i + 1));
 }
 
-function addPositionLog(desc, nearTable, xPct, yPct) {
+function addPositionLog(desc, nearTable, xPct, yPct, nearestTableId) {
   obsSession.positions.push({
     wallTime: new Date().toLocaleTimeString(),
     elapsedSec: currentElapsedSeconds(),
     desc, nearTable, x: xPct, y: yPct,
+    nearestTableId: nearestTableId || null,
   });
   renderPosLog();
   autosave();
@@ -581,13 +594,214 @@ function bindComments() {
   });
 }
 
+/* ── Position-map image (PNG) ─────────────────────────────────────────────
+   Rendered fresh onto an off-screen <canvas> at export time — independent of
+   the live map's on-screen size, but using the same percent-based table
+   layout (computeMapLayout) so the geometry matches what was observed.
+   Dot RADIUS encodes how long the TA stood at that spot (time until the
+   next logged position, or until the session ended for the last one).
+   Dot COLOR encodes chronological order along a red → purple rainbow, so
+   the first position is red and the last is purple. */
+function rainbowColor(t) {
+  // t in [0,1]: 0=red, ~0.17=orange, ~0.33=yellow, ~0.5=green, ~0.67=blue, 1=violet/purple
+  const hue = Math.max(0, Math.min(1, t)) * 270;
+  return `hsl(${hue}, 85%, 48%)`;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function positionDurations(s) {
+  // Seconds spent at each logged position, before the TA moved to the next
+  // one (or, for the last position, before the observation ended).
+  return s.positions.map((p, i) => {
+    const next = i < s.positions.length - 1 ? s.positions[i + 1].elapsedSec : s.totalSeconds;
+    return Math.max(0, (next != null ? next : p.elapsedSec) - p.elapsedSec);
+  });
+}
+
+function buildPositionMapImage(s) {
+  const W = 1000, headerH = 64, legendH = 64, plotH = 640;
+  const H = headerH + plotH + legendH;
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, W, H);
+
+  // Header
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#1A1814";
+  ctx.font = "700 20px Inter, sans-serif";
+  ctx.fillText(`${s.section} · ${s.ta}`, 24, 30);
+  ctx.fillStyle = "#4A4740";
+  ctx.font = "400 13px Inter, sans-serif";
+  ctx.fillText(
+    `Observer ${s.netid} · ${formatDateNice(s.date)} · ${formatTime(s.totalSeconds)} observed · ${s.positions.length} position${s.positions.length === 1 ? "" : "s"} logged`,
+    24, 50
+  );
+
+  // Plot area (room map)
+  ctx.save();
+  ctx.translate(0, headerH);
+  ctx.strokeStyle = "#D8D4CB";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.strokeRect(1, 1, W - 2, plotH - 2);
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = "#F5F3EE";
+  ctx.fillRect(0, 0, W, 30);
+  ctx.strokeStyle = "#EAE7E0";
+  ctx.beginPath(); ctx.moveTo(0, 30); ctx.lineTo(W, 30); ctx.stroke();
+  ctx.fillStyle = "#8A877E";
+  ctx.font = "600 11px 'DM Mono', monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("FRONT OF ROOM / BOARD", W / 2, 19);
+  ctx.textAlign = "left";
+
+  const plotRect = { width: W, height: plotH };
+  const tables = computeMapLayout(s.tables, plotRect);
+  tables.forEach(t => {
+    const x = t.x / 100 * W, y = t.y / 100 * plotH, w = t.w / 100 * W, h = t.h / 100 * plotH;
+    ctx.fillStyle = "#E8EEF6";
+    ctx.strokeStyle = "#C2D0E4";
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, y, w, h, 8);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#13294B";
+    ctx.textAlign = "center";
+    ctx.font = "700 10px 'DM Mono', monospace";
+    ctx.fillText("TABLE", x + w / 2, y + h / 2 - 4);
+    ctx.font = "700 16px 'DM Mono', monospace";
+    ctx.fillText(String(t.id), x + w / 2, y + h / 2 + 15);
+    ctx.textAlign = "left";
+  });
+
+  if (s.podium && s.podium.pos) {
+    const pw = 92, ph = 46;
+    const x = s.podium.pos.x / 100 * W, y = s.podium.pos.y / 100 * plotH;
+    ctx.fillStyle = "#F0ECFC";
+    ctx.strokeStyle = "#C9BCF4";
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, y, pw, ph, 6);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#5B3FA6";
+    ctx.font = "700 9px 'DM Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("PODIUM", x + pw / 2, y + ph / 2 + 3);
+    ctx.textAlign = "left";
+  }
+
+  if (!s.positions.length) {
+    ctx.fillStyle = "#8A877E";
+    ctx.font = "400 13px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No positions were logged during this observation.", W / 2, plotH / 2);
+    ctx.textAlign = "left";
+  } else {
+    const durations = positionDurations(s);
+    const minDur = Math.min(...durations), maxDur = Math.max(...durations);
+    const minR = 7, maxR = 26;
+    const radiusFor = d => {
+      if (maxDur === minDur) return (minR + maxR) / 2;
+      // sqrt scaling so dot AREA (not radius) is proportional to duration
+      const f = (Math.sqrt(d) - Math.sqrt(minDur)) / (Math.sqrt(maxDur) - Math.sqrt(minDur));
+      return minR + f * (maxR - minR);
+    };
+    const pts = s.positions.map(p => ({ x: p.x / 100 * W, y: p.y / 100 * plotH }));
+
+    // Faint path connecting positions in order, so the rotation is legible
+    ctx.strokeStyle = "rgba(26,24,20,0.18)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    pts.forEach((pt, i) => (i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    pts.forEach((pt, i) => {
+      const t = pts.length > 1 ? i / (pts.length - 1) : 0;
+      const r = radiusFor(durations[i]);
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = rainbowColor(t);
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#FFFFFF";
+      ctx.stroke();
+
+      ctx.fillStyle = "#FFFFFF";
+      ctx.strokeStyle = "rgba(0,0,0,0.35)";
+      ctx.lineWidth = 3;
+      ctx.font = `700 ${Math.max(9, Math.round(r * 0.75))}px 'DM Mono', monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.strokeText(String(i + 1), pt.x, pt.y);
+      ctx.fillText(String(i + 1), pt.x, pt.y);
+      ctx.textBaseline = "alphabetic";
+    });
+  }
+  ctx.restore();
+
+  // Legend
+  const legendY = headerH + plotH + 14;
+  ctx.textAlign = "left";
+  const barX = 24, barW = 260, barY = legendY + 8, barH = 10;
+  const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+  for (let i = 0; i <= 10; i++) grad.addColorStop(i / 10, rainbowColor(i / 10));
+  ctx.fillStyle = grad;
+  roundRect(ctx, barX, barY, barW, barH, 5);
+  ctx.fill();
+  ctx.fillStyle = "#4A4740";
+  ctx.font = "600 10px 'DM Mono', monospace";
+  ctx.fillText("1st position", barX, barY + 24);
+  ctx.textAlign = "right";
+  ctx.fillText("last position", barX + barW, barY + 24);
+  ctx.textAlign = "left";
+
+  const szX = barX + barW + 70;
+  ctx.beginPath(); ctx.arc(szX, barY + 4, 6, 0, Math.PI * 2);
+  ctx.fillStyle = "#8A877E"; ctx.fill();
+  ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = "#4A4740"; ctx.font = "400 11px Inter, sans-serif";
+  ctx.fillText("brief stop", szX + 14, barY + 8);
+
+  ctx.beginPath(); ctx.arc(szX + 110, barY + 4, 15, 0, Math.PI * 2);
+  ctx.fillStyle = "#8A877E"; ctx.fill();
+  ctx.strokeStyle = "#FFFFFF"; ctx.stroke();
+  ctx.fillText("longer stop", szX + 130, barY + 8);
+
+  return canvas;
+}
+
+function downloadImage(dataUrl, filename) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 /* ── End & export ──────────────────────────────────────────────────────── */
 let lastCSV = null;
 let lastFilename = null;
+let lastImageDataUrl = null;
+let lastImageFilename = null;
 
 function endObservation() {
   if (!obsSession) return;
-  if (!confirm("End this observation and export the CSV? You can download it again afterward if needed.")) return;
+  if (!confirm("End this observation and export the CSV and position map? You can download them again afterward if needed.")) return;
 
   if (obsSession.timerRunning) {
     obsSession.accumMs += Date.now() - obsSession.segmentStart;
@@ -602,6 +816,11 @@ function endObservation() {
   lastCSV = buildCSV(obsSession);
   lastFilename = buildFilename(obsSession);
   downloadCSV(lastCSV, lastFilename);
+
+  lastImageDataUrl = buildPositionMapImage(obsSession).toDataURL("image/png");
+  lastImageFilename = buildFilename(obsSession).replace(/\.csv$/i, "_position_map.png");
+  downloadImage(lastImageDataUrl, lastImageFilename);
+
   clearAutosave();
 
   const checkedCount = countChecked();
@@ -615,6 +834,10 @@ function endObservation() {
 
 function downloadCSVAgain() {
   if (lastCSV) downloadCSV(lastCSV, lastFilename);
+}
+
+function downloadImageAgain() {
+  if (lastImageDataUrl) downloadImage(lastImageDataUrl, lastImageFilename);
 }
 
 function newObservation() {
@@ -651,9 +874,10 @@ function buildCSV(s) {
   });
   lines.push("");
   lines.push("=== TA POSITION LOG ===");
-  lines.push(["#", "WallClockTime", "ElapsedSeconds", "Description", "Location", "X%", "Y%"].map(csvField).join(","));
+  lines.push(["#", "WallClockTime", "ElapsedSeconds", "Description", "Nearest Table", "X%", "Y%"].map(csvField).join(","));
   s.positions.forEach((p, i) => {
-    lines.push([i + 1, p.wallTime, p.elapsedSec, p.desc, p.nearTable || "", p.x, p.y].map(csvField).join(","));
+    const nearestLabel = p.nearestTableId ? `Table ${p.nearestTableId}` : "";
+    lines.push([i + 1, p.wallTime, p.elapsedSec, p.desc, nearestLabel, p.x, p.y].map(csvField).join(","));
   });
   lines.push("");
   lines.push("=== QUALITATIVE COMMENTS ===");
