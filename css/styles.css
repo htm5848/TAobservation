@@ -301,63 +301,63 @@ h1, h2, h3, p { margin: 0; }
   user-select: none;
   z-index: 2;
 }
-.map-table-node { overflow: hidden; border-radius: 8px; }
-.map-table-node .t-label { font-size: 7px; font-weight: 700; color: var(--blue); font-family: var(--mono); letter-spacing: 0.05em; line-height: 1; }
-.map-table-node .t-num { font-size: 13px; font-weight: 700; color: var(--blue); font-family: var(--mono); line-height: 1.1; }
+.map-table-node { overflow: hidden; border-radius: 6px; }
+.map-table-node .t-num { font-size: 12px; font-weight: 700; color: var(--blue); font-family: var(--mono); line-height: 1; }
 
-/* Each table's zone: a dashed cell with a gutter between neighbours */
+/* Each table's area: grid cells whose solid borders divide the room */
 .map-zone {
   position: absolute;
-  background: rgba(245,243,238,0.6);
-  border: 1.5px dashed var(--sand-3);
-  border-radius: 12px;
+  background: #FAF9F6;
+  border: 2px solid #8FA3C0;
+  margin: -1px 0 0 -1px;                      /* neighbouring borders overlap into one line */
   cursor: pointer;
   z-index: 1;
 }
 .map-zone:active { background: var(--orange-lt); }
+.zone-head {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 28px; padding: 0 3px 0 8px;
+}
+.zone-name { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--blue); letter-spacing: 0.03em; }
+.zone-seats { display: flex; align-items: center; gap: 2px; cursor: default; }
+.zone-seat-btn {
+  width: 26px; height: 24px; border-radius: 7px; border: 1px solid var(--blue-md);
+  background: var(--white); color: var(--blue); font-size: 15px; font-weight: 700; line-height: 1;
+  font-family: var(--sans); cursor: pointer; padding: 0;
+}
+.zone-seat-btn:active { background: var(--blue-lt); }
+.zone-seat-count { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--ink-2); min-width: 14px; text-align: center; }
 
-/* Student seats around each table — tap to toggle a raised hand */
-.map-seat {
+/* Student seat: numbered square + on/off switch (on = hand raised) */
+.seat-toggle {
   position: absolute;
-  transform: translate(-50%, -50%);
-  background: var(--white);
-  border: 1.5px solid var(--blue-md);
-  border-radius: 4px;
-  display: flex; align-items: center; justify-content: center;
-  font-family: var(--mono); font-size: 9px; font-weight: 700; color: var(--ink-3);
-  cursor: pointer; user-select: none;
-  z-index: 4;
-}
-.map-seat::before { content: ""; position: absolute; inset: -6px; }   /* bigger tap target */
-.map-seat.raised {
-  background: var(--orange); border-color: var(--orange); color: #fff;
-  box-shadow: 0 0 0 3px var(--orange-md);
-  animation: seat-pulse 1.4s ease-in-out infinite;
-}
-@keyframes seat-pulse { 50% { box-shadow: 0 0 0 6px rgba(232,74,0,0.18); } }
-.hands-up-count { color: var(--orange); font-weight: 700; margin-left: 6px; }
-
-/* Seat editing */
-.tbl-btn.seats { font-size: 13px; }
-.tbl-btn.seats.editing { background: var(--blue); border-color: var(--blue); color: #fff; }
-.seat-edit-banner {
-  background: var(--blue-lt); border: 1px solid var(--blue-md); color: var(--blue);
-  border-radius: var(--radius-sm); padding: 8px 12px; font-size: 12px; line-height: 1.4;
-}
-.map-canvas.editing, .map-canvas.editing .map-zone, .map-canvas.editing .map-table-node, .map-canvas.editing .map-seat { cursor: default; }
-.map-canvas.editing .map-zone { border-color: var(--blue-md); }
-.seat-stepper {
-  position: absolute; transform: translate(-50%, -50%); z-index: 6;
   display: flex; align-items: center; gap: 4px;
-  background: var(--white); border: 1.5px solid var(--blue-md); border-radius: 22px; padding: 3px;
-  box-shadow: var(--shadow-md);
+  padding: 0; margin: 0; border: none; background: none;
+  cursor: pointer; user-select: none; z-index: 4;
+  transform-origin: center;
 }
-.seat-stepper button {
-  width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer;
-  background: var(--blue-lt); color: var(--blue); font-size: 18px; font-weight: 700; font-family: var(--sans);
+.seat-toggle::before { content: ""; position: absolute; inset: -5px -3px; }   /* bigger tap target */
+.seat-num {
+  width: 20px; height: 20px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--white); border: 1.5px solid var(--blue-md); border-radius: 4px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--ink-2);
 }
-.seat-stepper button:active { transform: scale(0.94); }
-.seat-stepper span { font-family: var(--mono); font-size: 13px; font-weight: 700; min-width: 18px; text-align: center; color: var(--ink); }
+.seat-switch {
+  position: relative; width: 24px; height: 14px; flex-shrink: 0;
+  background: var(--sand-3); border-radius: 7px; transition: background 0.15s;
+}
+.seat-knob {
+  position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
+  background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+  transition: left 0.15s;
+}
+.seat-toggle.on .seat-num { background: var(--orange); border-color: var(--orange); color: #fff; }
+.seat-toggle.on .seat-switch { background: var(--orange); }
+.seat-toggle.on .seat-knob { left: 12px; }
+.seat-toggle.on .seat-num { animation: seat-pulse 1.4s ease-in-out infinite; }
+@keyframes seat-pulse { 50% { box-shadow: 0 0 0 4px rgba(232,74,0,0.22); } }
+.hands-up-count { color: var(--orange); font-weight: 700; margin-left: 6px; }
 
 /* Comments reminder modal */
 .modal-overlay {

@@ -87,7 +87,7 @@
           <input type="number" id="setup-student-count" class="stepper-input" value="4" min="0" max="10" readonly>
           <button type="button" class="stepper-btn" onclick="stepStudentsSetup(1)">+</button>
         </div>
-        <div class="field-hint">Starting number at every table. You can change individual tables during the observation with “Edit seats”.</div>
+        <div class="field-hint">Starting number at every table. You can change individual tables during the observation with the − / + on each table.</div>
       </div>
     </div>
 
@@ -126,17 +126,14 @@
       <div class="panel-header">
         <div>
           <h2>Where is the TA right now?</h2>
-          <p>Tap a table (or its dashed zone), the podium, or open floor each time the TA moves. Tap a student square when they raise a hand, and tap again when it goes down.</p>
+          <p>Tap a table (or anywhere in its area), the podium, or the front of the room each time the TA moves. Switch a student ON when they raise a hand, OFF when it goes down. Use − / + on each table to change its seats.</p>
         </div>
         <div class="table-controls">
           <button type="button" class="tbl-btn" onclick="stepTablesLive(-1)" aria-label="Remove a table">−</button>
           <span class="tbl-count"><input type="number" id="map-table-count" value="6" min="2" max="16" readonly> tables</span>
           <button type="button" class="tbl-btn add" onclick="stepTablesLive(1)">+ Add table</button>
-          <button type="button" class="tbl-btn seats" id="edit-seats-btn" onclick="toggleSeatEdit()">Edit seats</button>
         </div>
       </div>
-
-      <div class="seat-edit-banner hidden" id="seat-edit-banner">Editing seats — use − / + on each table to match the students there. Taps don't log anything until you press Done.</div>
 
       <div class="map-canvas-wrap">
         <div class="map-canvas" id="obs-canvas" onclick="logObsPosition(event)">
@@ -231,7 +228,7 @@
     <button class="btn-secondary big" onclick="newObservation()">Start another observation</button>
 
     <div class="auth-footer">
-      CSV includes checklist responses, qualitative comments, the table-position log, and total observation time. The CSV also has a student hand-raise log with where the TA was when each hand went up and down. The PNG shows the room map — student squares are colored by how long each student had a hand raised (red = brief → purple = longest); gray dots are TA positions, numbered in order and sized by time spent there. Save them to your Files app or email them to the research coordinator.
+      CSV includes checklist responses, qualitative comments, the table-position log, and total observation time. The CSV also has a student hand-raise log with where the TA was when each hand went up and down. The PNG shows the room map — each student's square is sized and colored by how long they had a hand raised (small/red = brief → large/purple = longest); gray dots are TA positions, numbered in order and sized by time spent there. Save them to your Files app or email them to the research coordinator.
     </div>
   </div>
 </div>

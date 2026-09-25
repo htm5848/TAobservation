@@ -262,7 +262,6 @@ function startObservation() {
   $("obs-comment-best").value = "";
   $("obs-comment-improve").value = "";
   $("obs-overall-comments").value = "";
-  setSeatEditMode(false);
 
   showScreen("screen-observe");
   renderChecklist();
@@ -339,52 +338,59 @@ function stepTablesLive(delta) {
   autosave();
 }
 
-/* Each table gets its own ZONE (a grid cell, drawn with a dashed border and
-   a gutter between neighbours) so taps land unambiguously on one table. The
-   table itself sits small in the middle of its zone with student SEATS
-   spaced evenly around its edge. All geometry is returned in % of the canvas
-   (seat size in px) so the live map and the exported PNG share it. */
-function seatPoint(d, a, b) {
-  // Walk the perimeter of a (2a × 2b) rectangle clockwise from top-centre.
-  if (d < a) return { x: d, y: -b };
-  d -= a;
-  if (d < 2 * b) return { x: a, y: -b + d };
-  d -= 2 * b;
-  if (d < 2 * a) return { x: a - d, y: b };
-  d -= 2 * a;
-  if (d < 2 * b) return { x: -a, y: b - d };
-  d -= 2 * b;
-  return { x: -a + d, y: -b };
-}
+/* The room below the front strip is split into a grid with one AREA per
+   table; solid lines between areas make it unambiguous which table the TA
+   is at. Each area has a header (table name + seat − / +), a small table in
+   the middle, and one SEAT per student: a numbered square with an on/off
+   switch (on = hand raised). Seat 1 is on top, then clockwise (right,
+   bottom, left); seats 5+ stack down the right and left sides.
+   Geometry is returned in % of the canvas so the live map and the exported
+   PNG share it; `seatScale` shrinks the seat widgets on crowded layouts
+   (the PNG passes maxScale > 1 to spread seats out on its larger map). */
+const SEAT_W = 48, SEAT_H = 24, SEAT_GAP = 6, ZONE_HEAD = 28;
 
-function computeMapLayout(tables, rect) {
+function computeMapLayout(tables, rect, maxScale = 1) {
   const n = tables.length;
   const W = rect.width, H = rect.height;
-  const topPx = 100, padPx = 8, gutterPx = 12;     // ~100px up front for the label + podium
+  const topPx = 100, padPx = 6;                    // ~100px up front for the label + podium
   const cols = n <= 4 ? 2 : n <= 9 ? 3 : 4;
   const rows = Math.ceil(n / cols);
-  const cellW = (W - padPx * 2) / cols, cellH = (H - topPx - padPx) / rows;
-  const zw = cellW - gutterPx, zh = cellH - gutterPx;
-  const seat = Math.max(12, Math.min(22, Math.min(zw, zh) * 0.15));
-  const ring = seat * 0.8;                        // gap from table edge to seat centre
-  const tw = Math.max(24, Math.min(zw * 0.42, zw - 2 * ring - seat - 12));
-  const th = Math.max(18, Math.min(tw * 0.65, zh - 2 * ring - seat - 12));
+  const zw = (W - padPx * 2) / cols, zh = (H - topPx - padPx) / rows;
+  const contentH = zh - ZONE_HEAD - 6;
+  let tw = Math.min(64, zw * 0.3), th = tw * 0.6;
+  const k = Math.max(0.55, Math.min(maxScale,
+    (zw - 8) / (tw + 2 * (SEAT_GAP + SEAT_W)),
+    contentH / (th + 2 * (SEAT_GAP + SEAT_H))));
+  tw *= k; th *= k;
+  const sw = SEAT_W * k, sh = SEAT_H * k, gap = SEAT_GAP * k;
   const px = v => v / W * 100, py = v => v / H * 100;
   return tables.map((t, i) => {
     const col = i % cols, row = Math.floor(i / cols);
-    const zx = padPx + col * cellW + gutterPx / 2, zy = topPx + row * cellH + gutterPx / 2;
-    const cx = zx + zw / 2, cy = zy + zh / 2;
-    const a = tw / 2 + ring, b = th / 2 + ring, perim = 4 * (a + b);
+    const zx = padPx + col * zw, zy = topPx + row * zh;
+    const cx = zx + zw / 2, cy = zy + ZONE_HEAD + (zh - ZONE_HEAD) / 2;
     const count = t.students != null ? t.students : DEFAULT_STUDENTS;
-    const seats = Array.from({ length: count }, (_, k) => {
-      const p = seatPoint(k * perim / count, a, b);
-      return { num: k + 1, x: px(cx + p.x), y: py(cy + p.y) };
+    const sides = { top: [], right: [], bottom: [], left: [] };
+    for (let s = 0; s < count; s++) {
+      const side = s < 4 ? ["top", "right", "bottom", "left"][s] : (s % 2 === 0 ? "right" : "left");
+      sides[side].push(s + 1);
+    }
+    const seats = [];
+    sides.top.forEach(num => seats.push({ num, x: cx, y: cy - th / 2 - gap - sh / 2 }));
+    sides.bottom.forEach(num => seats.push({ num, x: cx, y: cy + th / 2 + gap + sh / 2 }));
+    [["right", 1], ["left", -1]].forEach(([side, dir]) => {
+      const m = sides[side].length;
+      const step = m > 1 ? Math.min(sh + 4 * k, (contentH - sh) / (m - 1)) : 0;
+      sides[side].forEach((num, j) => seats.push({
+        num, x: cx + dir * (tw / 2 + gap + sw / 2), y: cy + (j - (m - 1) / 2) * step,
+      }));
     });
+    seats.sort((p, q) => p.num - q.num);
     return {
       id: t.id,
       zone: { x: px(zx), y: py(zy), w: px(zw), h: py(zh) },
       x: px(cx - tw / 2), y: py(cy - th / 2), w: px(tw), h: py(th),
-      seats, seatPx: seat,
+      seats: seats.map(st => ({ num: st.num, x: px(st.x), y: py(st.y) })),
+      seatScale: k,
     };
   });
 }
@@ -394,7 +400,7 @@ function renderObsMap() {
   if (!canvas || !obsSession) return;
   const rect = canvas.getBoundingClientRect();
   if (!rect.width || !rect.height) return;   // canvas hidden (Comments page)
-  canvas.querySelectorAll(".map-zone, .map-table-node, .map-seat, .seat-stepper, .map-landmark-node").forEach(n => n.remove());
+  canvas.querySelectorAll(".map-zone, .map-table-node, .seat-toggle, .map-landmark-node").forEach(n => n.remove());
 
   // Podium (draggable). Default: front-left, under the label strip.
   if (!obsSession.podium) obsSession.podium = { pos: null };
@@ -407,21 +413,31 @@ function renderObsMap() {
   podium.innerHTML = '<div class="lm-label">PODIUM</div>';
   canvas.appendChild(podium);
   attachPodiumDrag(podium, pos, () => {
-    if (seatEditMode) return;
     const r = canvas.getBoundingClientRect();
     logAt(pos.x + (podium.offsetWidth / 2) / r.width * 100,
           pos.y + (podium.offsetHeight / 2) / r.height * 100, "At the podium", "Podium");
   });
 
-  // Table zones, tables, and student seats (fixed)
+  // Table areas, tables, and student seats (fixed)
   mapLayout.tables = computeMapLayout(obsSession.tables, rect);
   mapLayout.tables.forEach(t => {
     const zone = document.createElement("div");
     zone.className = "map-zone";
     Object.assign(zone.style, { left: t.zone.x + "%", top: t.zone.y + "%", width: t.zone.w + "%", height: t.zone.h + "%" });
+    zone.innerHTML = `<div class="zone-head">
+        <span class="zone-name">Table ${t.id}</span>
+        <span class="zone-seats">
+          <button type="button" class="zone-seat-btn" aria-label="Remove a seat at table ${t.id}">−</button>
+          <span class="zone-seat-count">${t.seats.length}</span>
+          <button type="button" class="zone-seat-btn" aria-label="Add a seat at table ${t.id}">+</button>
+        </span>
+      </div>`;
+    const [minus, plus] = zone.querySelectorAll(".zone-seat-btn");
+    minus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, -1); });
+    plus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, 1); });
+    zone.querySelector(".zone-seats").addEventListener("click", e => e.stopPropagation());
     zone.addEventListener("click", e => {
       e.stopPropagation();
-      if (seatEditMode) return;
       const r = canvas.getBoundingClientRect();
       const x = Math.round((e.clientX - r.left) / r.width * 100), y = Math.round((e.clientY - r.top) / r.height * 100);
       drawDot(x, y, obsSession.positions.length + 1);
@@ -432,39 +448,32 @@ function renderObsMap() {
     const node = document.createElement("div");
     node.className = "map-table-node";
     Object.assign(node.style, { left: t.x + "%", top: t.y + "%", width: t.w + "%", height: t.h + "%" });
-    node.innerHTML = `<div class="t-label">TABLE</div><div class="t-num">${t.id}</div>`;
+    node.innerHTML = `<div class="t-num">${t.id}</div>`;
     node.addEventListener("click", e => {
       e.stopPropagation();
-      if (seatEditMode) return;
       logAt(t.x + t.w / 2, t.y + t.h / 2, `Table ${t.id}`, `Table ${t.id}`);
     });
     canvas.appendChild(node);
 
     t.seats.forEach(st => {
-      const seat = document.createElement("div");
-      seat.className = "map-seat" + (openHand(t.id, st.num) ? " raised" : "");
-      Object.assign(seat.style, { left: st.x + "%", top: st.y + "%", width: t.seatPx + "px", height: t.seatPx + "px" });
-      seat.textContent = st.num;
-      seat.title = `Table ${t.id}, student ${st.num}`;
+      const up = !!openHand(t.id, st.num);
+      const seat = document.createElement("button");
+      seat.type = "button";
+      seat.className = "seat-toggle" + (up ? " on" : "");
+      seat.setAttribute("aria-pressed", up);
+      seat.setAttribute("aria-label", `Table ${t.id}, student ${st.num}: hand ${up ? "raised" : "down"}`);
+      Object.assign(seat.style, {
+        left: st.x + "%", top: st.y + "%",
+        width: SEAT_W + "px", height: SEAT_H + "px",
+        transform: `translate(-50%, -50%) scale(${t.seatScale})`,
+      });
+      seat.innerHTML = `<span class="seat-num">${st.num}</span><span class="seat-switch"><span class="seat-knob"></span></span>`;
       seat.addEventListener("click", e => {
         e.stopPropagation();
-        if (seatEditMode) return;
         toggleHand(t.id, st.num);
       });
       canvas.appendChild(seat);
     });
-
-    if (seatEditMode) {
-      const step = document.createElement("div");
-      step.className = "seat-stepper";
-      Object.assign(step.style, { left: (t.x + t.w / 2) + "%", top: (t.y + t.h / 2) + "%" });
-      step.innerHTML = `<button type="button" aria-label="Remove a student from table ${t.id}">−</button><span>${t.seats.length}</span><button type="button" aria-label="Add a student to table ${t.id}">+</button>`;
-      const [minus, plus] = step.querySelectorAll("button");
-      minus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, -1); });
-      plus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, 1); });
-      step.addEventListener("click", e => e.stopPropagation());
-      canvas.appendChild(step);
-    }
   });
 
   redrawDots();
@@ -503,23 +512,7 @@ function attachPodiumDrag(node, pos, onTap) {
   node.addEventListener("pointercancel", () => { drag = null; });
 }
 
-/* ── Seat editing (add / remove students per table) ───────────────────── */
-let seatEditMode = false;
-
-function setSeatEditMode(on) {
-  seatEditMode = on;
-  const btn = $("edit-seats-btn");
-  if (btn) {
-    btn.textContent = on ? "Done" : "Edit seats";
-    btn.classList.toggle("editing", on);
-  }
-  $("obs-canvas").classList.toggle("editing", on);
-  $("seat-edit-banner").classList.toggle("hidden", !on);
-  renderObsMap();
-}
-
-function toggleSeatEdit() { setSeatEditMode(!seatEditMode); }
-
+/* ── Add / remove seats at one table (− / + in its area header) ─────── */
 function changeSeats(tableId, delta) {
   const t = obsSession && obsSession.tables.find(x => x.id === tableId);
   if (!t) return;
@@ -628,8 +621,8 @@ function logAt(xPct, yPct, desc, near) {
 
 /* Tap on open floor (outside every table zone): log where they tapped. */
 function logObsPosition(event) {
-  if (event.target.closest(".map-zone, .map-table-node, .map-seat, .seat-stepper, .map-landmark-node")) return;
-  if (!obsSession || seatEditMode) return;
+  if (event.target.closest(".map-zone, .map-table-node, .seat-toggle, .map-landmark-node")) return;
+  if (!obsSession) return;
   const rect = $("obs-canvas").getBoundingClientRect();
   const xPct = ((event.clientX - rect.left) / rect.width) * 100;
   const yPct = ((event.clientY - rect.top) / rect.height) * 100;
@@ -788,9 +781,10 @@ function bindComments() {
    the next logged position, or until the session ended for the last one);
    the number and the dashed path give the order. Dots are one neutral
    colour so they can't be confused with the student squares.
-   Student SQUARES: colour encodes each student's TOTAL hand-raised time on
-   a red → purple continuum (longest in the session = purple). Students who
-   never raised a hand stay white. */
+   Student SQUARES: SIZE and colour both encode each student's TOTAL
+   hand-raised time — small/red for a brief raise, large/purple for the
+   longest in the session. Students who never raised a hand stay a small
+   white outline. */
 const TA_DOT_COLOR = "rgba(26,24,20,0.72)";
 
 function rainbowColor(t) {
@@ -829,8 +823,17 @@ function studentHandTotals(s) {
   return totals;
 }
 
+/* Side length (px) of a student's square in the PNG: small for a brief
+   raise, larger for a long one (area ∝ time). Never raised = small outline. */
+function handSquareSize(sec, maxSec, raised) {
+  if (!raised) return 12;
+  const minS = 14, maxS = 40;
+  if (!(maxSec > 0)) return minS;
+  return minS + (maxS - minS) * Math.sqrt(Math.min(1, sec / maxSec));
+}
+
 function buildPositionMapImage(s) {
-  const W = 1000, headerH = 64, legendH = 92, plotH = 640;
+  const W = 1000, headerH = 64, legendH = 100, plotH = 640;
   const H = headerH + plotH + legendH;
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
@@ -872,43 +875,47 @@ function buildPositionMapImage(s) {
   ctx.textAlign = "left";
 
   const plotRect = { width: W, height: plotH };
-  const tables = computeMapLayout(s.tables, plotRect);
+  const tables = computeMapLayout(s.tables, plotRect, 1.8);   // roomier seats so big squares clear the table
   const totals = studentHandTotals(s);
   const maxHandSec = Math.max(0, ...Object.values(totals).map(v => v.sec));
   tables.forEach(t => {
+    // Table area with solid dividing lines
     const zx = t.zone.x / 100 * W, zy = t.zone.y / 100 * plotH, zw = t.zone.w / 100 * W, zh = t.zone.h / 100 * plotH;
     ctx.fillStyle = "#FAF9F6";
-    ctx.strokeStyle = "#D8D4CB";
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 4]);
-    roundRect(ctx, zx, zy, zw, zh, 12);
-    ctx.fill(); ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.fillRect(zx, zy, zw, zh);
+    ctx.strokeStyle = "#8FA3C0";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(zx, zy, zw, zh);
+    ctx.fillStyle = "#13294B";
+    ctx.font = "700 12px 'DM Mono', monospace";
+    ctx.textAlign = "left";
+    ctx.fillText(`TABLE ${t.id}`, zx + 10, zy + 18);
 
     const x = t.x / 100 * W, y = t.y / 100 * plotH, w = t.w / 100 * W, h = t.h / 100 * plotH;
     ctx.fillStyle = "#E8EEF6";
     ctx.strokeStyle = "#C2D0E4";
     ctx.lineWidth = 2;
-    roundRect(ctx, x, y, w, h, 8);
+    roundRect(ctx, x, y, w, h, 6);
     ctx.fill(); ctx.stroke();
     ctx.fillStyle = "#13294B";
     ctx.textAlign = "center";
-    ctx.font = "700 9px 'DM Mono', monospace";
-    ctx.fillText("TABLE", x + w / 2, y + h / 2 - 3);
-    ctx.font = "700 14px 'DM Mono', monospace";
-    ctx.fillText(String(t.id), x + w / 2, y + h / 2 + 12);
+    ctx.font = "700 13px 'DM Mono', monospace";
+    ctx.fillText(String(t.id), x + w / 2, y + h / 2 + 5);
 
+    // Students: square SIZE and COLOR = total time that student's hand was up
     t.seats.forEach(st => {
-      const sz = t.seatPx, sx = st.x / 100 * W - sz / 2, sy = st.y / 100 * plotH - sz / 2;
       const tot = totals[`${t.id}-${st.num}`];
+      const sec = tot ? tot.sec : 0;
       const raised = tot && tot.count > 0;
-      ctx.fillStyle = raised ? rainbowColor(maxHandSec > 0 ? tot.sec / maxHandSec : 0) : "#FFFFFF";
+      const sz = handSquareSize(sec, maxHandSec, raised);
+      const sx = st.x / 100 * W - sz / 2, sy = st.y / 100 * plotH - sz / 2;
+      ctx.fillStyle = raised ? rainbowColor(maxHandSec > 0 ? sec / maxHandSec : 0) : "#FFFFFF";
       ctx.strokeStyle = raised ? "#FFFFFF" : "#C2D0E4";
       ctx.lineWidth = 1.5;
-      roundRect(ctx, sx, sy, sz, sz, 4);
+      roundRect(ctx, sx, sy, sz, sz, Math.min(4, sz / 4));
       ctx.fill(); ctx.stroke();
       ctx.fillStyle = raised ? "#FFFFFF" : "#8A877E";
-      ctx.font = `700 ${Math.round(sz * 0.5)}px 'DM Mono', monospace`;
+      ctx.font = `700 ${Math.max(8, Math.round(Math.min(sz, 26) * 0.5))}px 'DM Mono', monospace`;
       ctx.textBaseline = "middle";
       ctx.fillText(String(st.num), sx + sz / 2, sy + sz / 2 + 1);
       ctx.textBaseline = "alphabetic";
@@ -984,30 +991,31 @@ function buildPositionMapImage(s) {
   // Legend — row 1: student squares; row 2: TA dots
   const legendY = headerH + plotH + 14;
   ctx.textAlign = "left";
-  const barX = 24, barW = 260, barY = legendY + 6, barH = 10;
+  const barX = 24, barY = legendY + 6;
   ctx.fillStyle = "#1A1814";
   ctx.font = "600 11px Inter, sans-serif";
-  ctx.fillText("Student squares — total time hand raised", barX, barY - 2);
-  const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
-  for (let i = 0; i <= 10; i++) grad.addColorStop(i / 10, rainbowColor(i / 10));
-  ctx.fillStyle = grad;
-  roundRect(ctx, barX, barY + 6, barW, barH, 5);
-  ctx.fill();
+  ctx.fillText("Student squares — size and color = total time hand raised", barX, barY - 2);
+  let lx = barX;
+  const midY = barY + 20;
+  [0.08, 0.35, 0.7, 1].forEach(f => {
+    const sz = handSquareSize(f, 1, true);
+    ctx.fillStyle = rainbowColor(f);
+    roundRect(ctx, lx, midY - sz / 2, sz, sz, Math.min(4, sz / 4));
+    ctx.fill();
+    lx += sz + 10;
+  });
   ctx.fillStyle = "#4A4740";
-  ctx.font = "600 10px 'DM Mono', monospace";
-  ctx.fillText("brief", barX, barY + 30);
-  ctx.textAlign = "right";
-  ctx.fillText(maxHandSec > 0 ? `longest (${formatTime(maxHandSec)})` : "longest", barX + barW, barY + 30);
-  ctx.textAlign = "left";
-
-  const nsX = barX + barW + 40;
+  ctx.font = "400 11px Inter, sans-serif";
+  ctx.fillText(maxHandSec > 0 ? `short raise → longest (${formatTime(maxHandSec)})` : "short raise → long raise", lx + 4, midY + 4);
+  const nsX = lx + 230;
   ctx.fillStyle = "#FFFFFF"; ctx.strokeStyle = "#C2D0E4"; ctx.lineWidth = 1.5;
-  roundRect(ctx, nsX, barY + 4, 14, 14, 3);
+  const nsz = handSquareSize(0, 1, false);
+  roundRect(ctx, nsX, midY - nsz / 2, nsz, nsz, 3);
   ctx.fill(); ctx.stroke();
-  ctx.fillStyle = "#4A4740"; ctx.font = "400 11px Inter, sans-serif";
-  ctx.fillText("never raised a hand", nsX + 22, barY + 15);
+  ctx.fillStyle = "#4A4740";
+  ctx.fillText("never raised a hand", nsX + nsz + 8, midY + 4);
 
-  const dotY = barY + 56;
+  const dotY = barY + 60;
   ctx.fillStyle = "#1A1814";
   ctx.font = "600 11px Inter, sans-serif";
   ctx.fillText("TA positions — number = order, size = time spent there", barX, dotY + 4);
@@ -1077,7 +1085,6 @@ function exportWithoutComments() {
 
 function finishObservation() {
   if (!obsSession) return;
-  setSeatEditMode(false);
   if (obsSession.timerRunning) {
     obsSession.accumMs += Date.now() - obsSession.segmentStart;
     obsSession.segmentStart = null;
