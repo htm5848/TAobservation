@@ -340,57 +340,57 @@ function stepTablesLive(delta) {
 
 /* The room below the front strip is split into a grid with one AREA per
    table; solid lines between areas make it unambiguous which table the TA
-   is at. Each area has a header (table name + seat − / +), a small table in
-   the middle, and one SEAT per student: a numbered square with an on/off
-   switch (on = hand raised). Seat 1 is on top, then clockwise (right,
-   bottom, left); seats 5+ stack down the right and left sides.
-   Geometry is returned in % of the canvas so the live map and the exported
-   PNG share it; `seatScale` shrinks the seat widgets on crowded layouts
-   (the PNG passes maxScale > 1 to spread seats out on its larger map). */
-const SEAT_W = 48, SEAT_H = 24, SEAT_GAP = 6, ZONE_HEAD = 28;
+   is at. Each area has a header (table name + seat − / +) and the TABLE: a
+   rectangle with its students sitting inside it as squares in two rows
+   (1–2 on top, 3–4 below for the default four; extra students add columns).
+   Geometry is returned in % of the canvas (seat size in px) so the live map
+   and the exported PNG share it. `opts` sets the seat size/gap/padding —
+   the PNG uses larger seats so several raise-squares fit in each one. */
+const ZONE_HEAD = 28;
 
-function computeMapLayout(tables, rect, maxScale = 1) {
+function seatGrid(count) {
+  return { cols: Math.max(1, Math.ceil(count / 2)), rows: count > 1 ? 2 : 1 };
+}
+
+function computeMapLayout(tables, rect, opts = {}) {
+  const SEAT = opts.seat || 26, GAP = opts.gap || 6, PAD = opts.pad || 7;
   const n = tables.length;
   const W = rect.width, H = rect.height;
   const topPx = 100, padPx = 6;                    // ~100px up front for the label + podium
   const cols = n <= 4 ? 2 : n <= 9 ? 3 : 4;
   const rows = Math.ceil(n / cols);
   const zw = (W - padPx * 2) / cols, zh = (H - topPx - padPx) / rows;
-  const contentH = zh - ZONE_HEAD - 6;
-  let tw = Math.min(64, zw * 0.3), th = tw * 0.6;
-  const k = Math.max(0.55, Math.min(maxScale,
-    (zw - 8) / (tw + 2 * (SEAT_GAP + SEAT_W)),
-    contentH / (th + 2 * (SEAT_GAP + SEAT_H))));
-  tw *= k; th *= k;
-  const sw = SEAT_W * k, sh = SEAT_H * k, gap = SEAT_GAP * k;
+  const countOf = t => (t.students != null ? t.students : DEFAULT_STUDENTS);
+  const widest = Math.max(1, ...tables.map(t => seatGrid(countOf(t)).cols));
+  const k = Math.max(0.5, Math.min(1,
+    (zw - 16) / (widest * SEAT + (widest - 1) * GAP + 2 * PAD),
+    (zh - ZONE_HEAD - 14) / (2 * SEAT + GAP + 2 * PAD)));
+  const seat = SEAT * k, gap = GAP * k, pad = PAD * k;
   const px = v => v / W * 100, py = v => v / H * 100;
   return tables.map((t, i) => {
     const col = i % cols, row = Math.floor(i / cols);
     const zx = padPx + col * zw, zy = topPx + row * zh;
     const cx = zx + zw / 2, cy = zy + ZONE_HEAD + (zh - ZONE_HEAD) / 2;
-    const count = t.students != null ? t.students : DEFAULT_STUDENTS;
-    const sides = { top: [], right: [], bottom: [], left: [] };
-    for (let s = 0; s < count; s++) {
-      const side = s < 4 ? ["top", "right", "bottom", "left"][s] : (s % 2 === 0 ? "right" : "left");
-      sides[side].push(s + 1);
-    }
-    const seats = [];
-    sides.top.forEach(num => seats.push({ num, x: cx, y: cy - th / 2 - gap - sh / 2 }));
-    sides.bottom.forEach(num => seats.push({ num, x: cx, y: cy + th / 2 + gap + sh / 2 }));
-    [["right", 1], ["left", -1]].forEach(([side, dir]) => {
-      const m = sides[side].length;
-      const step = m > 1 ? Math.min(sh + 4 * k, (contentH - sh) / (m - 1)) : 0;
-      sides[side].forEach((num, j) => seats.push({
-        num, x: cx + dir * (tw / 2 + gap + sw / 2), y: cy + (j - (m - 1) / 2) * step,
-      }));
+    const count = countOf(t);
+    const g = seatGrid(count);
+    const tw = Math.max(g.cols * seat + (g.cols - 1) * gap + 2 * pad, 2 * seat);
+    const th = Math.max(g.rows * seat + (g.rows - 1) * gap + 2 * pad, seat + 2 * pad);
+    const seats = Array.from({ length: count }, (_, s) => {
+      const r = s < g.cols ? 0 : 1, c = r === 0 ? s : s - g.cols;
+      const inRow = r === 0 ? Math.min(count, g.cols) : count - g.cols;
+      const rowW = inRow * seat + (inRow - 1) * gap;
+      const rowsH = g.rows * seat + (g.rows - 1) * gap;
+      return {
+        num: s + 1,
+        x: px(cx - rowW / 2 + c * (seat + gap) + seat / 2),
+        y: py(cy - rowsH / 2 + r * (seat + gap) + seat / 2),
+      };
     });
-    seats.sort((p, q) => p.num - q.num);
     return {
       id: t.id,
       zone: { x: px(zx), y: py(zy), w: px(zw), h: py(zh) },
       x: px(cx - tw / 2), y: py(cy - th / 2), w: px(tw), h: py(th),
-      seats: seats.map(st => ({ num: st.num, x: px(st.x), y: py(st.y) })),
-      seatScale: k,
+      seats, seatPx: seat,
     };
   });
 }
@@ -400,7 +400,7 @@ function renderObsMap() {
   if (!canvas || !obsSession) return;
   const rect = canvas.getBoundingClientRect();
   if (!rect.width || !rect.height) return;   // canvas hidden (Comments page)
-  canvas.querySelectorAll(".map-zone, .map-table-node, .seat-toggle, .map-landmark-node").forEach(n => n.remove());
+  canvas.querySelectorAll(".map-zone, .map-table-node, .seat, .map-landmark-node").forEach(n => n.remove());
 
   // Podium (draggable). Default: front-left, under the label strip.
   if (!obsSession.podium) obsSession.podium = { pos: null };
@@ -417,6 +417,15 @@ function renderObsMap() {
     logAt(pos.x + (podium.offsetWidth / 2) / r.width * 100,
           pos.y + (podium.offsetHeight / 2) / r.height * 100, "At the podium", "Podium");
   });
+
+  // Log the TA where the area/table was tapped (so the dot doesn't sit on the students).
+  const logTap = (e, desc, t) => {
+    e.stopPropagation();
+    const r = canvas.getBoundingClientRect();
+    const x = Math.round((e.clientX - r.left) / r.width * 100), y = Math.round((e.clientY - r.top) / r.height * 100);
+    drawDot(x, y, obsSession.positions.length + 1);
+    addPositionLog(desc, `Table ${t.id}`, x, y, t.id);
+  };
 
   // Table areas, tables, and student seats (fixed)
   mapLayout.tables = computeMapLayout(obsSession.tables, rect);
@@ -436,38 +445,28 @@ function renderObsMap() {
     minus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, -1); });
     plus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, 1); });
     zone.querySelector(".zone-seats").addEventListener("click", e => e.stopPropagation());
-    zone.addEventListener("click", e => {
-      e.stopPropagation();
-      const r = canvas.getBoundingClientRect();
-      const x = Math.round((e.clientX - r.left) / r.width * 100), y = Math.round((e.clientY - r.top) / r.height * 100);
-      drawDot(x, y, obsSession.positions.length + 1);
-      addPositionLog(`Near Table ${t.id}`, `Table ${t.id}`, x, y, t.id);
-    });
+    zone.addEventListener("click", e => logTap(e, `Near Table ${t.id}`, t));
     canvas.appendChild(zone);
 
     const node = document.createElement("div");
     node.className = "map-table-node";
     Object.assign(node.style, { left: t.x + "%", top: t.y + "%", width: t.w + "%", height: t.h + "%" });
-    node.innerHTML = `<div class="t-num">${t.id}</div>`;
-    node.addEventListener("click", e => {
-      e.stopPropagation();
-      logAt(t.x + t.w / 2, t.y + t.h / 2, `Table ${t.id}`, `Table ${t.id}`);
-    });
+    node.addEventListener("click", e => logTap(e, `Table ${t.id}`, t));
     canvas.appendChild(node);
 
     t.seats.forEach(st => {
       const up = !!openHand(t.id, st.num);
       const seat = document.createElement("button");
       seat.type = "button";
-      seat.className = "seat-toggle" + (up ? " on" : "");
+      seat.className = "seat" + (up ? " on" : "");
       seat.setAttribute("aria-pressed", up);
       seat.setAttribute("aria-label", `Table ${t.id}, student ${st.num}: hand ${up ? "raised" : "down"}`);
       Object.assign(seat.style, {
         left: st.x + "%", top: st.y + "%",
-        width: SEAT_W + "px", height: SEAT_H + "px",
-        transform: `translate(-50%, -50%) scale(${t.seatScale})`,
+        width: t.seatPx + "px", height: t.seatPx + "px",
+        fontSize: Math.round(t.seatPx * 0.42) + "px",
       });
-      seat.innerHTML = `<span class="seat-num">${st.num}</span><span class="seat-switch"><span class="seat-knob"></span></span>`;
+      seat.textContent = st.num;
       seat.addEventListener("click", e => {
         e.stopPropagation();
         toggleHand(t.id, st.num);
@@ -621,7 +620,7 @@ function logAt(xPct, yPct, desc, near) {
 
 /* Tap on open floor (outside every table zone): log where they tapped. */
 function logObsPosition(event) {
-  if (event.target.closest(".map-zone, .map-table-node, .seat-toggle, .map-landmark-node")) return;
+  if (event.target.closest(".map-zone, .map-table-node, .seat, .map-landmark-node")) return;
   if (!obsSession) return;
   const rect = $("obs-canvas").getBoundingClientRect();
   const xPct = ((event.clientX - rect.left) / rect.width) * 100;
@@ -775,18 +774,15 @@ function bindComments() {
 
 /* ── Position-map image (PNG) ─────────────────────────────────────────────
    Rendered fresh onto an off-screen <canvas> at export time — independent of
-   the live map's on-screen size, but using the same percent-based table
-   layout (computeMapLayout) so the geometry matches what was observed.
-   TA dots: RADIUS encodes how long the TA stood at that spot (time until
-   the next logged position, or until the session ended for the last one);
-   the number and the dashed path give the order. Dots are one neutral
-   colour so they can't be confused with the student squares.
-   Student SQUARES: SIZE and colour both encode each student's TOTAL
-   hand-raised time — small/red for a brief raise, large/purple for the
-   longest in the session. Students who never raised a hand stay a small
-   white outline. */
-const TA_DOT_COLOR = "rgba(26,24,20,0.72)";
-
+   the live map's on-screen size, but using the same table layout
+   (computeMapLayout) so the geometry matches what was observed.
+   COLOUR = WHEN something happened, on one red → purple scale running from
+   the start to the end of the observation — shared by TA circles and
+   student squares, so same colour ≈ same moment in the session.
+   SIZE = HOW LONG: a TA circle's radius is the time spent at that spot
+   (until the next logged position); a student square's side is how long
+   that one raise lasted. Every raise is its own square, drawn side by side
+   inside that student's seat, so repeat askers show several squares. */
 function rainbowColor(t) {
   // t in [0,1]: 0=red, ~0.17=orange, ~0.33=yellow, ~0.5=green, ~0.67=blue, 1=violet/purple
   const hue = Math.max(0, Math.min(1, t)) * 270;
@@ -823,21 +819,52 @@ function studentHandTotals(s) {
   return totals;
 }
 
-/* Side length (px) of a student's square in the PNG: small for a brief
-   raise, larger for a long one (area ∝ time). Never raised = small outline. */
-function handSquareSize(sec, maxSec, raised) {
-  if (!raised) return 12;
-  const minS = 14, maxS = 40;
+/* Side (px) of one raise-square: small for a brief raise, larger for a long
+   one (area ∝ duration), relative to the longest single raise. */
+function raiseSquareSize(sec, maxSec, maxS) {
+  const minS = Math.min(10, maxS);
   if (!(maxSec > 0)) return minS;
   return minS + (maxS - minS) * Math.sqrt(Math.min(1, sec / maxSec));
 }
 
+/* Lay squares of the given sizes out in centred rows inside a box; shrink
+   them all until they fit. Returns [{x, y, size}] relative to the box. */
+function packSquares(sizes, boxW, boxH, gap) {
+  for (let f = 1; f > 0.2; f *= 0.85) {
+    const rows = [[]];
+    let rowW = 0;
+    sizes.forEach((sz0, i) => {
+      const sz = sz0 * f;
+      if (rows[rows.length - 1].length && rowW + gap + sz > boxW) { rows.push([]); rowW = 0; }
+      rowW += (rows[rows.length - 1].length ? gap : 0) + sz;
+      rows[rows.length - 1].push({ i, size: sz });
+    });
+    const rowH = rows.map(r => Math.max(...r.map(q => q.size)));
+    const totalH = rowH.reduce((a, b) => a + b, 0) + gap * (rows.length - 1);
+    const fitsW = rows.every(r => r.reduce((a, q) => a + q.size, 0) + gap * (r.length - 1) <= boxW);
+    if (totalH <= boxH && fitsW) {
+      const out = [];
+      let y = (boxH - totalH) / 2;
+      rows.forEach((r, ri) => {
+        const w = r.reduce((a, q) => a + q.size, 0) + gap * (r.length - 1);
+        let x = (boxW - w) / 2;
+        r.forEach(q => { out[q.i] = { x, y: y + (rowH[ri] - q.size) / 2, size: q.size }; x += q.size + gap; });
+        y += rowH[ri] + gap;
+      });
+      return out;
+    }
+  }
+  return sizes.map(() => ({ x: 0, y: 0, size: 4 }));
+}
+
 function buildPositionMapImage(s) {
-  const W = 1000, headerH = 64, legendH = 100, plotH = 640;
+  const W = 1000, headerH = 64, legendH = 104, plotH = 640;
   const H = headerH + plotH + legendH;
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
+  const endSec = Math.max(1, s.totalSeconds || 0);
+  const whenColor = sec => rainbowColor(sec / endSec);
 
   ctx.fillStyle = "#FFFFFF";
   ctx.fillRect(0, 0, W, H);
@@ -875,9 +902,11 @@ function buildPositionMapImage(s) {
   ctx.textAlign = "left";
 
   const plotRect = { width: W, height: plotH };
-  const tables = computeMapLayout(s.tables, plotRect, 1.8);   // roomier seats so big squares clear the table
-  const totals = studentHandTotals(s);
-  const maxHandSec = Math.max(0, ...Object.values(totals).map(v => v.sec));
+  const tables = computeMapLayout(s.tables, plotRect, { seat: 64, gap: 8, pad: 10 });
+  const hands = s.hands || [];
+  const endMs = (s.totalSeconds || 0) * 1000;
+  const maxRaiseSec = Math.max(0, ...hands.map(h => handDurationSec(h, endMs)));
+  const raiseSquares = [];   // drawn last, on top of the TA circles
   tables.forEach(t => {
     // Table area with solid dividing lines
     const zx = t.zone.x / 100 * W, zy = t.zone.y / 100 * plotH, zw = t.zone.w / 100 * W, zh = t.zone.h / 100 * plotH;
@@ -895,30 +924,31 @@ function buildPositionMapImage(s) {
     ctx.fillStyle = "#E8EEF6";
     ctx.strokeStyle = "#C2D0E4";
     ctx.lineWidth = 2;
-    roundRect(ctx, x, y, w, h, 6);
+    roundRect(ctx, x, y, w, h, 8);
     ctx.fill(); ctx.stroke();
-    ctx.fillStyle = "#13294B";
-    ctx.textAlign = "center";
-    ctx.font = "700 13px 'DM Mono', monospace";
-    ctx.fillText(String(t.id), x + w / 2, y + h / 2 + 5);
 
-    // Students: square SIZE and COLOR = total time that student's hand was up
+    // Each seat: an outlined cell holding one square per raise
     t.seats.forEach(st => {
-      const tot = totals[`${t.id}-${st.num}`];
-      const sec = tot ? tot.sec : 0;
-      const raised = tot && tot.count > 0;
-      const sz = handSquareSize(sec, maxHandSec, raised);
-      const sx = st.x / 100 * W - sz / 2, sy = st.y / 100 * plotH - sz / 2;
-      ctx.fillStyle = raised ? rainbowColor(maxHandSec > 0 ? sec / maxHandSec : 0) : "#FFFFFF";
-      ctx.strokeStyle = raised ? "#FFFFFF" : "#C2D0E4";
+      const sz = t.seatPx, sx = st.x / 100 * W - sz / 2, sy = st.y / 100 * plotH - sz / 2;
+      ctx.fillStyle = "#FFFFFF";
+      ctx.strokeStyle = "#C2D0E4";
       ctx.lineWidth = 1.5;
-      roundRect(ctx, sx, sy, sz, sz, Math.min(4, sz / 4));
+      roundRect(ctx, sx, sy, sz, sz, 5);
       ctx.fill(); ctx.stroke();
-      ctx.fillStyle = raised ? "#FFFFFF" : "#8A877E";
-      ctx.font = `700 ${Math.max(8, Math.round(Math.min(sz, 26) * 0.5))}px 'DM Mono', monospace`;
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(st.num), sx + sz / 2, sy + sz / 2 + 1);
-      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = "#8A877E";
+      ctx.font = "700 9px 'DM Mono', monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(String(st.num), sx + 4, sy + 11);
+
+      const mine = hands.filter(hd => hd.table === t.id && hd.student === st.num).sort((p, q) => p.raisedMs - q.raisedMs);
+      if (!mine.length) return;
+      const inner = sz - 8;
+      const sizes = mine.map(hd => raiseSquareSize(handDurationSec(hd, endMs), maxRaiseSec, inner * 0.7));
+      const placed = packSquares(sizes, inner, inner - 6, 3);
+      mine.forEach((hd, i) => {
+        const q = placed[i];
+        raiseSquares.push({ x: sx + 4 + q.x, y: sy + 10 + q.y, size: q.size, color: whenColor(hd.raisedMs / 1000) });
+      });
     });
     ctx.textAlign = "left";
   });
@@ -942,12 +972,12 @@ function buildPositionMapImage(s) {
     ctx.fillStyle = "#8A877E";
     ctx.font = "400 13px Inter, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("No positions were logged during this observation.", W / 2, plotH / 2);
+    ctx.fillText("No TA positions were logged during this observation.", W / 2, 60);
     ctx.textAlign = "left";
   } else {
     const durations = positionDurations(s);
     const minDur = Math.min(...durations), maxDur = Math.max(...durations);
-    const minR = 7, maxR = 26;
+    const minR = 7, maxR = 24;
     const radiusFor = d => {
       if (maxDur === minDur) return (minR + maxR) / 2;
       // sqrt scaling so dot AREA (not radius) is proportional to duration
@@ -957,7 +987,7 @@ function buildPositionMapImage(s) {
     const pts = s.positions.map(p => ({ x: p.x / 100 * W, y: p.y / 100 * plotH }));
 
     // Faint path connecting positions in order, so the rotation is legible
-    ctx.strokeStyle = "rgba(26,24,20,0.18)";
+    ctx.strokeStyle = "rgba(26,24,20,0.22)";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
@@ -965,18 +995,20 @@ function buildPositionMapImage(s) {
     ctx.stroke();
     ctx.setLineDash([]);
 
+    // Slightly see-through so student squares underneath stay readable
+    ctx.globalAlpha = 0.85;
     pts.forEach((pt, i) => {
       const r = radiusFor(durations[i]);
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = TA_DOT_COLOR;
+      ctx.fillStyle = whenColor(s.positions[i].elapsedSec);
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = "#FFFFFF";
       ctx.stroke();
 
       ctx.fillStyle = "#FFFFFF";
-      ctx.strokeStyle = "rgba(0,0,0,0.35)";
+      ctx.strokeStyle = "rgba(0,0,0,0.4)";
       ctx.lineWidth = 3;
       ctx.font = `700 ${Math.max(9, Math.round(r * 0.75))}px 'DM Mono', monospace`;
       ctx.textAlign = "center";
@@ -985,52 +1017,50 @@ function buildPositionMapImage(s) {
       ctx.fillText(String(i + 1), pt.x, pt.y);
       ctx.textBaseline = "alphabetic";
     });
+    ctx.globalAlpha = 1;
   }
+
+  raiseSquares.forEach(q => {
+    ctx.fillStyle = q.color;
+    roundRect(ctx, q.x, q.y, q.size, q.size, Math.min(3, q.size / 4));
+    ctx.fill();
+    ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 1.5; ctx.stroke();
+  });
   ctx.restore();
 
-  // Legend — row 1: student squares; row 2: TA dots
-  const legendY = headerH + plotH + 14;
+  // Legend — colour = when; sizes = how long
+  const legendY = headerH + plotH + 12;
+  const barX = 24, barW = 300;
   ctx.textAlign = "left";
-  const barX = 24, barY = legendY + 6;
   ctx.fillStyle = "#1A1814";
   ctx.font = "600 11px Inter, sans-serif";
-  ctx.fillText("Student squares — size and color = total time hand raised", barX, barY - 2);
-  let lx = barX;
-  const midY = barY + 20;
-  [0.08, 0.35, 0.7, 1].forEach(f => {
-    const sz = handSquareSize(f, 1, true);
-    ctx.fillStyle = rainbowColor(f);
-    roundRect(ctx, lx, midY - sz / 2, sz, sz, Math.min(4, sz / 4));
-    ctx.fill();
-    lx += sz + 10;
-  });
+  ctx.fillText("Color = when it happened (TA circles and student squares)", barX, legendY + 10);
+  const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+  for (let i = 0; i <= 10; i++) grad.addColorStop(i / 10, rainbowColor(i / 10));
+  ctx.fillStyle = grad;
+  roundRect(ctx, barX, legendY + 18, barW, 10, 5);
+  ctx.fill();
+  ctx.fillStyle = "#4A4740";
+  ctx.font = "600 10px 'DM Mono', monospace";
+  ctx.fillText("start 00:00", barX, legendY + 42);
+  ctx.textAlign = "right";
+  ctx.fillText(`end ${formatTime(s.totalSeconds)}`, barX + barW, legendY + 42);
+  ctx.textAlign = "left";
+
+  const colX = barX + barW + 50;
+  ctx.fillStyle = "#1A1814";
+  ctx.font = "600 11px Inter, sans-serif";
+  ctx.fillText("Size = how long", colX, legendY + 10);
+  ctx.fillStyle = "#8A877E";
+  let lx = colX;
+  [12, 20, 30].forEach(sz => { roundRect(ctx, lx, legendY + 18 + (30 - sz) / 2, sz, sz, 3); ctx.fill(); lx += sz + 8; });
   ctx.fillStyle = "#4A4740";
   ctx.font = "400 11px Inter, sans-serif";
-  ctx.fillText(maxHandSec > 0 ? `short raise → longest (${formatTime(maxHandSec)})` : "short raise → long raise", lx + 4, midY + 4);
-  const nsX = lx + 230;
-  ctx.fillStyle = "#FFFFFF"; ctx.strokeStyle = "#C2D0E4"; ctx.lineWidth = 1.5;
-  const nsz = handSquareSize(0, 1, false);
-  roundRect(ctx, nsX, midY - nsz / 2, nsz, nsz, 3);
-  ctx.fill(); ctx.stroke();
+  ctx.fillText("hand raised: short → long (one square per raise)", lx + 6, legendY + 38);
+  let dx = colX + 6;
+  [6, 10, 15].forEach(r => { ctx.beginPath(); ctx.arc(dx + r, legendY + 72, r, 0, Math.PI * 2); ctx.fillStyle = "#8A877E"; ctx.fill(); dx += 2 * r + 8; });
   ctx.fillStyle = "#4A4740";
-  ctx.fillText("never raised a hand", nsX + nsz + 8, midY + 4);
-
-  const dotY = barY + 60;
-  ctx.fillStyle = "#1A1814";
-  ctx.font = "600 11px Inter, sans-serif";
-  ctx.fillText("TA positions — number = order, size = time spent there", barX, dotY + 4);
-  const szX = barX + 360;
-  ctx.beginPath(); ctx.arc(szX, dotY, 6, 0, Math.PI * 2);
-  ctx.fillStyle = TA_DOT_COLOR; ctx.fill();
-  ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 1.5; ctx.stroke();
-  ctx.fillStyle = "#4A4740"; ctx.font = "400 11px Inter, sans-serif";
-  ctx.fillText("brief stop", szX + 14, dotY + 4);
-
-  ctx.beginPath(); ctx.arc(szX + 110, dotY, 13, 0, Math.PI * 2);
-  ctx.fillStyle = TA_DOT_COLOR; ctx.fill();
-  ctx.strokeStyle = "#FFFFFF"; ctx.stroke();
-  ctx.fillStyle = "#4A4740";
-  ctx.fillText("longer stop", szX + 130, dotY + 4);
+  ctx.fillText("TA stop: brief → long (number = order)", dx + 4, legendY + 76);
 
   return canvas;
 }

@@ -301,8 +301,7 @@ h1, h2, h3, p { margin: 0; }
   user-select: none;
   z-index: 2;
 }
-.map-table-node { overflow: hidden; border-radius: 6px; }
-.map-table-node .t-num { font-size: 12px; font-weight: 700; color: var(--blue); font-family: var(--mono); line-height: 1; }
+.map-table-node { border-radius: 8px; }
 
 /* Each table's area: grid cells whose solid borders divide the room */
 .map-zone {
@@ -328,35 +327,25 @@ h1, h2, h3, p { margin: 0; }
 .zone-seat-btn:active { background: var(--blue-lt); }
 .zone-seat-count { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--ink-2); min-width: 14px; text-align: center; }
 
-/* Student seat: numbered square + on/off switch (on = hand raised) */
-.seat-toggle {
+/* Student seat: a square inside the table — tap on (hand raised) / off */
+.seat {
   position: absolute;
-  display: flex; align-items: center; gap: 4px;
-  padding: 0; margin: 0; border: none; background: none;
-  cursor: pointer; user-select: none; z-index: 4;
-  transform-origin: center;
-}
-.seat-toggle::before { content: ""; position: absolute; inset: -5px -3px; }   /* bigger tap target */
-.seat-num {
-  width: 20px; height: 20px; flex-shrink: 0;
+  transform: translate(-50%, -50%);
   display: flex; align-items: center; justify-content: center;
-  background: var(--white); border: 1.5px solid var(--blue-md); border-radius: 4px;
-  font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--ink-2);
+  padding: 0; margin: 0;
+  background: var(--white); border: 1.5px solid var(--blue-md); border-radius: 5px;
+  font-family: var(--mono); font-weight: 700; color: var(--ink-2);
+  cursor: pointer; user-select: none; z-index: 4;
 }
-.seat-switch {
-  position: relative; width: 24px; height: 14px; flex-shrink: 0;
-  background: var(--sand-3); border-radius: 7px; transition: background 0.15s;
+.seat:active { transform: translate(-50%, -50%) scale(0.94); }
+.seat.on {
+  background: var(--orange); border-color: var(--orange); color: #fff;
+  animation: seat-pulse 1.4s ease-in-out infinite;
 }
-.seat-knob {
-  position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
-  background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.25);
-  transition: left 0.15s;
+@keyframes seat-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(232,74,0,0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(232,74,0,0.12); }
 }
-.seat-toggle.on .seat-num { background: var(--orange); border-color: var(--orange); color: #fff; }
-.seat-toggle.on .seat-switch { background: var(--orange); }
-.seat-toggle.on .seat-knob { left: 12px; }
-.seat-toggle.on .seat-num { animation: seat-pulse 1.4s ease-in-out infinite; }
-@keyframes seat-pulse { 50% { box-shadow: 0 0 0 4px rgba(232,74,0,0.22); } }
 .hands-up-count { color: var(--orange); font-weight: 700; margin-left: 6px; }
 
 /* Comments reminder modal */
@@ -399,18 +388,18 @@ h1, h2, h3, p { margin: 0; }
 
 .map-dot {
   position: absolute;
-  width: 16px; height: 16px;
-  background: var(--orange);
+  width: 12px; height: 12px; opacity: 0.9;
+  background: var(--green);
   border-radius: 50%;
   border: 2px solid #fff;
   transform: translate(-50%, -50%);
   box-shadow: 0 1px 4px rgba(0,0,0,0.25);
-  z-index: 10;
+  z-index: 10;                                /* on top, but taps pass through to the seats */
   pointer-events: none;
 }
 .map-dot .dot-num {
   position: absolute; top: -17px; left: 50%; transform: translateX(-50%);
-  font-size: 9px; font-family: var(--mono); font-weight: 700; color: var(--orange); white-space: nowrap;
+  font-size: 9px; font-family: var(--mono); font-weight: 700; color: var(--green); white-space: nowrap;
 }
 
 .map-log-wrap { background: var(--white); border: 1px solid var(--sand-2); border-radius: var(--radius); display: flex; flex-direction: column; overflow: hidden; height: 122px; flex-shrink: 0; }
