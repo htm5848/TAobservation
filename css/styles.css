@@ -301,8 +301,84 @@ h1, h2, h3, p { margin: 0; }
   user-select: none;
   z-index: 2;
 }
-.map-table-node .t-label { font-size: 8px; font-weight: 700; color: var(--blue); font-family: var(--mono); letter-spacing: 0.05em; }
-.map-table-node .t-num { font-size: 16px; font-weight: 700; color: var(--blue); font-family: var(--mono); }
+.map-table-node { overflow: hidden; border-radius: 8px; }
+.map-table-node .t-label { font-size: 7px; font-weight: 700; color: var(--blue); font-family: var(--mono); letter-spacing: 0.05em; line-height: 1; }
+.map-table-node .t-num { font-size: 13px; font-weight: 700; color: var(--blue); font-family: var(--mono); line-height: 1.1; }
+
+/* Each table's zone: a dashed cell with a gutter between neighbours */
+.map-zone {
+  position: absolute;
+  background: rgba(245,243,238,0.6);
+  border: 1.5px dashed var(--sand-3);
+  border-radius: 12px;
+  cursor: pointer;
+  z-index: 1;
+}
+.map-zone:active { background: var(--orange-lt); }
+
+/* Student seats around each table — tap to toggle a raised hand */
+.map-seat {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  background: var(--white);
+  border: 1.5px solid var(--blue-md);
+  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 9px; font-weight: 700; color: var(--ink-3);
+  cursor: pointer; user-select: none;
+  z-index: 4;
+}
+.map-seat::before { content: ""; position: absolute; inset: -6px; }   /* bigger tap target */
+.map-seat.raised {
+  background: var(--orange); border-color: var(--orange); color: #fff;
+  box-shadow: 0 0 0 3px var(--orange-md);
+  animation: seat-pulse 1.4s ease-in-out infinite;
+}
+@keyframes seat-pulse { 50% { box-shadow: 0 0 0 6px rgba(232,74,0,0.18); } }
+.hands-up-count { color: var(--orange); font-weight: 700; margin-left: 6px; }
+
+/* Seat editing */
+.tbl-btn.seats { font-size: 13px; }
+.tbl-btn.seats.editing { background: var(--blue); border-color: var(--blue); color: #fff; }
+.seat-edit-banner {
+  background: var(--blue-lt); border: 1px solid var(--blue-md); color: var(--blue);
+  border-radius: var(--radius-sm); padding: 8px 12px; font-size: 12px; line-height: 1.4;
+}
+.map-canvas.editing, .map-canvas.editing .map-zone, .map-canvas.editing .map-table-node, .map-canvas.editing .map-seat { cursor: default; }
+.map-canvas.editing .map-zone { border-color: var(--blue-md); }
+.seat-stepper {
+  position: absolute; transform: translate(-50%, -50%); z-index: 6;
+  display: flex; align-items: center; gap: 4px;
+  background: var(--white); border: 1.5px solid var(--blue-md); border-radius: 22px; padding: 3px;
+  box-shadow: var(--shadow-md);
+}
+.seat-stepper button {
+  width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--blue-lt); color: var(--blue); font-size: 18px; font-weight: 700; font-family: var(--sans);
+}
+.seat-stepper button:active { transform: scale(0.94); }
+.seat-stepper span { font-family: var(--mono); font-size: 13px; font-weight: 700; min-width: 18px; text-align: center; color: var(--ink); }
+
+/* Comments reminder modal */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(19,41,75,0.45);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.modal-overlay.hidden { display: none; }
+.modal-card {
+  background: var(--white); border-radius: var(--radius); box-shadow: var(--shadow-md);
+  max-width: 480px; width: 100%; padding: 24px;
+}
+.modal-card h3 { margin: 0 0 10px; font-size: 18px; font-weight: 700; }
+.modal-card p { margin: 0 0 10px; font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
+.modal-missing { color: var(--orange) !important; font-weight: 600; }
+.modal-note {
+  background: var(--sand); border: 1px solid var(--sand-2); border-radius: var(--radius-sm);
+  padding: 10px 12px; font-size: 12.5px; color: var(--ink-2); line-height: 1.5; margin-bottom: 16px;
+}
+.modal-actions { display: flex; gap: 10px; }
+.modal-actions button { flex: 1; margin-top: 0; }
 
 .map-landmark-node {
   position: absolute;
@@ -405,5 +481,6 @@ h1, h2, h3, p { margin: 0; }
   .obs-tab { flex: 1; }
   .btn-end { order: 3; width: 100%; }
   .page-nav { flex-direction: column; }
+  .modal-actions { flex-direction: column; }
   .auth-card, .setup-card { padding: 26px 20px; }
 }

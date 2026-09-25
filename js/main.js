@@ -86,6 +86,10 @@ const CHECKLIST = [
   },
 ];
 
+const DEFAULT_STUDENTS = 4;     // students seated at each table when a session starts
+const MAX_STUDENTS = 10;        // per-table upper limit for the seat stepper
+const MISTAP_MS = 1500;         // a hand lowered this soon after raising is treated as a mis-tap and dropped
+
 const STORAGE_KEY = "phys211obs_session_v1";
 const LAST_NETID_KEY = "phys211obs_last_netid";
 
@@ -119,11 +123,15 @@ function formatTime(totalSeconds) {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-function currentElapsedSeconds() {
+function currentElapsedMs() {
   if (!obsSession) return 0;
   let ms = obsSession.accumMs || 0;
   if (obsSession.timerRunning && obsSession.segmentStart) ms += Date.now() - obsSession.segmentStart;
-  return Math.round(ms / 1000);
+  return ms;
+}
+
+function currentElapsedSeconds() {
+  return Math.round(currentElapsedMs() / 1000);
 }
 
 function autosave() {
@@ -187,6 +195,7 @@ function resetSetupForm() {
   $("setup-section").value = "";
   $("setup-ta-name").value = "";
   $("setup-table-count").value = 6;
+  $("setup-student-count").value = DEFAULT_STUDENTS;
   const today = new Date();
   $("setup-date").value = today.toISOString().slice(0, 10);
   $("setup-warning").style.display = "none";
@@ -199,11 +208,18 @@ function stepTables(delta) {
   input.value = v;
 }
 
+function stepStudentsSetup(delta) {
+  const input = $("setup-student-count");
+  let v = parseInt(input.value || String(DEFAULT_STUDENTS), 10) + delta;
+  input.value = Math.max(0, Math.min(MAX_STUDENTS, v));
+}
+
 function startObservation() {
   const section = $("setup-section").value;
   const ta = $("setup-ta-name").value;
   const date = $("setup-date").value;
   const n = parseInt($("setup-table-count").value || "6", 10);
+  const spt = parseInt($("setup-student-count").value || String(DEFAULT_STUDENTS), 10);
   const warn = $("setup-warning");
 
   if (!section) {
@@ -222,9 +238,11 @@ function startObservation() {
     netid: currentNetID,
     section, ta, date,
     tableCount: n,
-    tables: Array.from({ length: n }, (_, i) => ({ id: i + 1 })),
+    defaultStudents: spt,
+    tables: Array.from({ length: n }, (_, i) => ({ id: i + 1, students: spt })),
     podium: { pos: null },          // the only movable object on the map; {x,y} in % of canvas
     positions: [],
+    hands: [],                      // hand-raise intervals, one per raise (see toggleHand)
     checklist: {},
     bestComments: "",
     improveComments: "",
@@ -244,6 +262,7 @@ function startObservation() {
   $("obs-comment-best").value = "";
   $("obs-comment-improve").value = "";
   $("obs-overall-comments").value = "";
+  setSeatEditMode(false);
 
   showScreen("screen-observe");
   renderChecklist();
@@ -308,9 +327,11 @@ function stepTablesLive(delta) {
   n = Math.max(2, Math.min(16, n));
   if (n === obsSession.tableCount) return;
   if (n > obsSession.tableCount) {
-    for (let i = obsSession.tableCount; i < n; i++) obsSession.tables.push({ id: i + 1 });
+    const spt = obsSession.defaultStudents != null ? obsSession.defaultStudents : DEFAULT_STUDENTS;
+    for (let i = obsSession.tableCount; i < n; i++) obsSession.tables.push({ id: i + 1, students: spt });
   } else {
     obsSession.tables = obsSession.tables.slice(0, n);
+    closeHands(h => h.table > n, "Table removed");
   }
   obsSession.tableCount = n;
   $("map-table-count").value = n;
@@ -318,22 +339,52 @@ function stepTablesLive(delta) {
   autosave();
 }
 
+/* Each table gets its own ZONE (a grid cell, drawn with a dashed border and
+   a gutter between neighbours) so taps land unambiguously on one table. The
+   table itself sits small in the middle of its zone with student SEATS
+   spaced evenly around its edge. All geometry is returned in % of the canvas
+   (seat size in px) so the live map and the exported PNG share it. */
+function seatPoint(d, a, b) {
+  // Walk the perimeter of a (2a × 2b) rectangle clockwise from top-centre.
+  if (d < a) return { x: d, y: -b };
+  d -= a;
+  if (d < 2 * b) return { x: a, y: -b + d };
+  d -= 2 * b;
+  if (d < 2 * a) return { x: a - d, y: b };
+  d -= 2 * a;
+  if (d < 2 * b) return { x: -a, y: b - d };
+  d -= 2 * b;
+  return { x: -a + d, y: -b };
+}
+
 function computeMapLayout(tables, rect) {
   const n = tables.length;
-  const areaX = 4, areaW = 92;
-  const areaY = (100 / rect.height) * 100;          // leave ~100px up front for the label + podium
-  const areaH = 97 - areaY;
+  const W = rect.width, H = rect.height;
+  const topPx = 100, padPx = 8, gutterPx = 12;     // ~100px up front for the label + podium
   const cols = n <= 4 ? 2 : n <= 9 ? 3 : 4;
   const rows = Math.ceil(n / cols);
-  const cellW = areaW / cols, cellH = areaH / rows;
-  const w = cellW * 0.8;
-  const h = Math.min(cellH * 0.8, ((w / 100 * rect.width) * 0.75) / rect.height * 100);  // keep tables roughly 4:3
+  const cellW = (W - padPx * 2) / cols, cellH = (H - topPx - padPx) / rows;
+  const zw = cellW - gutterPx, zh = cellH - gutterPx;
+  const seat = Math.max(12, Math.min(22, Math.min(zw, zh) * 0.15));
+  const ring = seat * 0.8;                        // gap from table edge to seat centre
+  const tw = Math.max(24, Math.min(zw * 0.42, zw - 2 * ring - seat - 12));
+  const th = Math.max(18, Math.min(tw * 0.65, zh - 2 * ring - seat - 12));
+  const px = v => v / W * 100, py = v => v / H * 100;
   return tables.map((t, i) => {
     const col = i % cols, row = Math.floor(i / cols);
+    const zx = padPx + col * cellW + gutterPx / 2, zy = topPx + row * cellH + gutterPx / 2;
+    const cx = zx + zw / 2, cy = zy + zh / 2;
+    const a = tw / 2 + ring, b = th / 2 + ring, perim = 4 * (a + b);
+    const count = t.students != null ? t.students : DEFAULT_STUDENTS;
+    const seats = Array.from({ length: count }, (_, k) => {
+      const p = seatPoint(k * perim / count, a, b);
+      return { num: k + 1, x: px(cx + p.x), y: py(cy + p.y) };
+    });
     return {
-      id: t.id, w, h,
-      x: areaX + col * cellW + (cellW - w) / 2,
-      y: areaY + row * cellH + (cellH - h) / 2,
+      id: t.id,
+      zone: { x: px(zx), y: py(zy), w: px(zw), h: py(zh) },
+      x: px(cx - tw / 2), y: py(cy - th / 2), w: px(tw), h: py(th),
+      seats, seatPx: seat,
     };
   });
 }
@@ -343,7 +394,7 @@ function renderObsMap() {
   if (!canvas || !obsSession) return;
   const rect = canvas.getBoundingClientRect();
   if (!rect.width || !rect.height) return;   // canvas hidden (Comments page)
-  canvas.querySelectorAll(".map-table-node, .map-landmark-node").forEach(n => n.remove());
+  canvas.querySelectorAll(".map-zone, .map-table-node, .map-seat, .seat-stepper, .map-landmark-node").forEach(n => n.remove());
 
   // Podium (draggable). Default: front-left, under the label strip.
   if (!obsSession.podium) obsSession.podium = { pos: null };
@@ -356,29 +407,68 @@ function renderObsMap() {
   podium.innerHTML = '<div class="lm-label">PODIUM</div>';
   canvas.appendChild(podium);
   attachPodiumDrag(podium, pos, () => {
+    if (seatEditMode) return;
     const r = canvas.getBoundingClientRect();
     logAt(pos.x + (podium.offsetWidth / 2) / r.width * 100,
           pos.y + (podium.offsetHeight / 2) / r.height * 100, "At the podium", "Podium");
   });
 
-  // Tables (fixed)
+  // Table zones, tables, and student seats (fixed)
   mapLayout.tables = computeMapLayout(obsSession.tables, rect);
   mapLayout.tables.forEach(t => {
+    const zone = document.createElement("div");
+    zone.className = "map-zone";
+    Object.assign(zone.style, { left: t.zone.x + "%", top: t.zone.y + "%", width: t.zone.w + "%", height: t.zone.h + "%" });
+    zone.addEventListener("click", e => {
+      e.stopPropagation();
+      if (seatEditMode) return;
+      const r = canvas.getBoundingClientRect();
+      const x = Math.round((e.clientX - r.left) / r.width * 100), y = Math.round((e.clientY - r.top) / r.height * 100);
+      drawDot(x, y, obsSession.positions.length + 1);
+      addPositionLog(`Near Table ${t.id}`, `Table ${t.id}`, x, y, t.id);
+    });
+    canvas.appendChild(zone);
+
     const node = document.createElement("div");
     node.className = "map-table-node";
-    node.style.left = t.x + "%";
-    node.style.top = t.y + "%";
-    node.style.width = t.w + "%";
-    node.style.height = t.h + "%";
+    Object.assign(node.style, { left: t.x + "%", top: t.y + "%", width: t.w + "%", height: t.h + "%" });
     node.innerHTML = `<div class="t-label">TABLE</div><div class="t-num">${t.id}</div>`;
     node.addEventListener("click", e => {
       e.stopPropagation();
+      if (seatEditMode) return;
       logAt(t.x + t.w / 2, t.y + t.h / 2, `Table ${t.id}`, `Table ${t.id}`);
     });
     canvas.appendChild(node);
+
+    t.seats.forEach(st => {
+      const seat = document.createElement("div");
+      seat.className = "map-seat" + (openHand(t.id, st.num) ? " raised" : "");
+      Object.assign(seat.style, { left: st.x + "%", top: st.y + "%", width: t.seatPx + "px", height: t.seatPx + "px" });
+      seat.textContent = st.num;
+      seat.title = `Table ${t.id}, student ${st.num}`;
+      seat.addEventListener("click", e => {
+        e.stopPropagation();
+        if (seatEditMode) return;
+        toggleHand(t.id, st.num);
+      });
+      canvas.appendChild(seat);
+    });
+
+    if (seatEditMode) {
+      const step = document.createElement("div");
+      step.className = "seat-stepper";
+      Object.assign(step.style, { left: (t.x + t.w / 2) + "%", top: (t.y + t.h / 2) + "%" });
+      step.innerHTML = `<button type="button" aria-label="Remove a student from table ${t.id}">−</button><span>${t.seats.length}</span><button type="button" aria-label="Add a student to table ${t.id}">+</button>`;
+      const [minus, plus] = step.querySelectorAll("button");
+      minus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, -1); });
+      plus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, 1); });
+      step.addEventListener("click", e => e.stopPropagation());
+      canvas.appendChild(step);
+    }
   });
 
   redrawDots();
+  updateHandsCount();
 }
 
 /* Pointer-based drag for the podium only (works for mouse AND touch; HTML5
@@ -413,6 +503,103 @@ function attachPodiumDrag(node, pos, onTap) {
   node.addEventListener("pointercancel", () => { drag = null; });
 }
 
+/* ── Seat editing (add / remove students per table) ───────────────────── */
+let seatEditMode = false;
+
+function setSeatEditMode(on) {
+  seatEditMode = on;
+  const btn = $("edit-seats-btn");
+  if (btn) {
+    btn.textContent = on ? "Done" : "Edit seats";
+    btn.classList.toggle("editing", on);
+  }
+  $("obs-canvas").classList.toggle("editing", on);
+  $("seat-edit-banner").classList.toggle("hidden", !on);
+  renderObsMap();
+}
+
+function toggleSeatEdit() { setSeatEditMode(!seatEditMode); }
+
+function changeSeats(tableId, delta) {
+  const t = obsSession && obsSession.tables.find(x => x.id === tableId);
+  if (!t) return;
+  const cur = t.students != null ? t.students : DEFAULT_STUDENTS;
+  const n = Math.max(0, Math.min(MAX_STUDENTS, cur + delta));
+  if (n === cur) return;
+  t.students = n;
+  closeHands(h => h.table === tableId && h.student > n, "Seat removed");
+  renderObsMap();
+  autosave();
+}
+
+/* ── Student hand raises ──────────────────────────────────────────────────
+   Tap a student's square when they raise a hand, tap again when it goes
+   down. Each raise is stored as one interval (raised → lowered) with the
+   TA's most recently logged location at both ends, so the CSV can show
+   whether the TA went to raised hands or was just rotating. */
+function lastPositionDesc() {
+  const p = obsSession.positions[obsSession.positions.length - 1];
+  return p ? p.desc : "";
+}
+
+function openHand(tableId, student) {
+  return obsSession && (obsSession.hands || []).find(h => h.table === tableId && h.student === student && h.loweredMs == null);
+}
+
+function raisedHandLabels() {
+  return (obsSession.hands || []).filter(h => h.loweredMs == null).map(h => `T${h.table}-S${h.student}`);
+}
+
+function toggleHand(tableId, student) {
+  if (!obsSession) return;
+  if (!obsSession.hands) obsSession.hands = [];
+  const open = openHand(tableId, student);
+  if (open) {
+    if (Date.now() - open.raisedAtWall < MISTAP_MS) {
+      obsSession.hands.splice(obsSession.hands.indexOf(open), 1);   // quick double-tap = mis-tap
+    } else {
+      open.loweredMs = currentElapsedMs();
+      open.loweredWall = new Date().toLocaleTimeString();
+      open.taAtLower = lastPositionDesc();
+    }
+  } else {
+    obsSession.hands.push({
+      table: tableId, student,
+      raisedMs: currentElapsedMs(),
+      raisedWall: new Date().toLocaleTimeString(),
+      raisedAtWall: Date.now(),
+      taAtRaise: lastPositionDesc(),
+      loweredMs: null, loweredWall: "", taAtLower: "", note: "",
+    });
+  }
+  renderObsMap();
+  autosave();
+}
+
+/* Lower every open hand matching `pred` right now (table/seat removed, or
+   the observation ended), noting why. */
+function closeHands(pred, note) {
+  if (!obsSession || !obsSession.hands) return;
+  const ms = currentElapsedMs(), wall = new Date().toLocaleTimeString(), ta = lastPositionDesc();
+  obsSession.hands.forEach(h => {
+    if (h.loweredMs == null && pred(h)) {
+      h.loweredMs = ms; h.loweredWall = wall; h.taAtLower = ta; h.note = note;
+    }
+  });
+}
+
+function handDurationSec(h, endMs) {
+  const end = h.loweredMs != null ? h.loweredMs : endMs;
+  return Math.max(0, Math.round((end - h.raisedMs) / 1000));
+}
+
+function updateHandsCount() {
+  const el = $("obs-hands-count");
+  if (!el || !obsSession) return;
+  const n = raisedHandLabels().length;
+  el.textContent = n ? `✋ ${n} hand${n === 1 ? "" : "s"} up` : "";
+}
+
 /* Find whichever table's center is spatially closest to a point (in % of
    canvas), regardless of distance — used so every logged position (table
    tap, podium tap, or open-floor tap) always has a "nearest table" on
@@ -439,21 +626,19 @@ function logAt(xPct, yPct, desc, near) {
   addPositionLog(desc, near, x, y, nearestTable ? nearestTable.id : null);
 }
 
-/* Tap on open floor: log where they tapped, or "Near Table N" if close to one. */
+/* Tap on open floor (outside every table zone): log where they tapped. */
 function logObsPosition(event) {
-  if (event.target.closest(".map-table-node, .map-landmark-node")) return;
-  if (!obsSession) return;
+  if (event.target.closest(".map-zone, .map-table-node, .map-seat, .seat-stepper, .map-landmark-node")) return;
+  if (!obsSession || seatEditMode) return;
   const rect = $("obs-canvas").getBoundingClientRect();
   const xPct = ((event.clientX - rect.left) / rect.width) * 100;
   const yPct = ((event.clientY - rect.top) / rect.height) * 100;
 
   const nearestTable = nearestTableToPct(xPct, yPct, rect);
-  const near = nearestTable && nearestTable.dist < 55 ? nearestTable : null;
   const x = Math.round(xPct), y = Math.round(yPct);
-  const desc = near ? `Near Table ${near.id}` : `Open area (${x}%, ${y}%)`;
 
   drawDot(x, y, obsSession.positions.length + 1);
-  addPositionLog(desc, near ? `Table ${near.id}` : "", x, y, nearestTable ? nearestTable.id : null);
+  addPositionLog(`Open area (${x}%, ${y}%)`, "", x, y, nearestTable ? nearestTable.id : null);
 }
 
 function drawDot(xPct, yPct, num) {
@@ -481,6 +666,7 @@ function addPositionLog(desc, nearTable, xPct, yPct, nearestTableId) {
     elapsedSec: currentElapsedSeconds(),
     desc, nearTable, x: xPct, y: yPct,
     nearestTableId: nearestTableId || null,
+    handsUp: raisedHandLabels(),
   });
   renderPosLog();
   autosave();
@@ -598,10 +784,15 @@ function bindComments() {
    Rendered fresh onto an off-screen <canvas> at export time — independent of
    the live map's on-screen size, but using the same percent-based table
    layout (computeMapLayout) so the geometry matches what was observed.
-   Dot RADIUS encodes how long the TA stood at that spot (time until the
-   next logged position, or until the session ended for the last one).
-   Dot COLOR encodes chronological order along a red → purple rainbow, so
-   the first position is red and the last is purple. */
+   TA dots: RADIUS encodes how long the TA stood at that spot (time until
+   the next logged position, or until the session ended for the last one);
+   the number and the dashed path give the order. Dots are one neutral
+   colour so they can't be confused with the student squares.
+   Student SQUARES: colour encodes each student's TOTAL hand-raised time on
+   a red → purple continuum (longest in the session = purple). Students who
+   never raised a hand stay white. */
+const TA_DOT_COLOR = "rgba(26,24,20,0.72)";
+
 function rainbowColor(t) {
   // t in [0,1]: 0=red, ~0.17=orange, ~0.33=yellow, ~0.5=green, ~0.67=blue, 1=violet/purple
   const hue = Math.max(0, Math.min(1, t)) * 270;
@@ -627,8 +818,19 @@ function positionDurations(s) {
   });
 }
 
+function studentHandTotals(s) {
+  const totals = {};
+  (s.hands || []).forEach(h => {
+    const key = `${h.table}-${h.student}`;
+    if (!totals[key]) totals[key] = { sec: 0, count: 0 };
+    totals[key].sec += handDurationSec(h, (s.totalSeconds || 0) * 1000);
+    totals[key].count += 1;
+  });
+  return totals;
+}
+
 function buildPositionMapImage(s) {
-  const W = 1000, headerH = 64, legendH = 64, plotH = 640;
+  const W = 1000, headerH = 64, legendH = 92, plotH = 640;
   const H = headerH + plotH + legendH;
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
@@ -646,7 +848,7 @@ function buildPositionMapImage(s) {
   ctx.fillStyle = "#4A4740";
   ctx.font = "400 13px Inter, sans-serif";
   ctx.fillText(
-    `Observer ${s.netid} · ${formatDateNice(s.date)} · ${formatTime(s.totalSeconds)} observed · ${s.positions.length} position${s.positions.length === 1 ? "" : "s"} logged`,
+    `Observer ${s.netid} · ${formatDateNice(s.date)} · ${formatTime(s.totalSeconds)} observed · ${s.positions.length} position${s.positions.length === 1 ? "" : "s"} logged · ${(s.hands || []).length} hand raise${(s.hands || []).length === 1 ? "" : "s"}`,
     24, 50
   );
 
@@ -671,7 +873,18 @@ function buildPositionMapImage(s) {
 
   const plotRect = { width: W, height: plotH };
   const tables = computeMapLayout(s.tables, plotRect);
+  const totals = studentHandTotals(s);
+  const maxHandSec = Math.max(0, ...Object.values(totals).map(v => v.sec));
   tables.forEach(t => {
+    const zx = t.zone.x / 100 * W, zy = t.zone.y / 100 * plotH, zw = t.zone.w / 100 * W, zh = t.zone.h / 100 * plotH;
+    ctx.fillStyle = "#FAF9F6";
+    ctx.strokeStyle = "#D8D4CB";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    roundRect(ctx, zx, zy, zw, zh, 12);
+    ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+
     const x = t.x / 100 * W, y = t.y / 100 * plotH, w = t.w / 100 * W, h = t.h / 100 * plotH;
     ctx.fillStyle = "#E8EEF6";
     ctx.strokeStyle = "#C2D0E4";
@@ -680,10 +893,26 @@ function buildPositionMapImage(s) {
     ctx.fill(); ctx.stroke();
     ctx.fillStyle = "#13294B";
     ctx.textAlign = "center";
-    ctx.font = "700 10px 'DM Mono', monospace";
-    ctx.fillText("TABLE", x + w / 2, y + h / 2 - 4);
-    ctx.font = "700 16px 'DM Mono', monospace";
-    ctx.fillText(String(t.id), x + w / 2, y + h / 2 + 15);
+    ctx.font = "700 9px 'DM Mono', monospace";
+    ctx.fillText("TABLE", x + w / 2, y + h / 2 - 3);
+    ctx.font = "700 14px 'DM Mono', monospace";
+    ctx.fillText(String(t.id), x + w / 2, y + h / 2 + 12);
+
+    t.seats.forEach(st => {
+      const sz = t.seatPx, sx = st.x / 100 * W - sz / 2, sy = st.y / 100 * plotH - sz / 2;
+      const tot = totals[`${t.id}-${st.num}`];
+      const raised = tot && tot.count > 0;
+      ctx.fillStyle = raised ? rainbowColor(maxHandSec > 0 ? tot.sec / maxHandSec : 0) : "#FFFFFF";
+      ctx.strokeStyle = raised ? "#FFFFFF" : "#C2D0E4";
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, sx, sy, sz, sz, 4);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = raised ? "#FFFFFF" : "#8A877E";
+      ctx.font = `700 ${Math.round(sz * 0.5)}px 'DM Mono', monospace`;
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(st.num), sx + sz / 2, sy + sz / 2 + 1);
+      ctx.textBaseline = "alphabetic";
+    });
     ctx.textAlign = "left";
   });
 
@@ -730,11 +959,10 @@ function buildPositionMapImage(s) {
     ctx.setLineDash([]);
 
     pts.forEach((pt, i) => {
-      const t = pts.length > 1 ? i / (pts.length - 1) : 0;
       const r = radiusFor(durations[i]);
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = rainbowColor(t);
+      ctx.fillStyle = TA_DOT_COLOR;
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = "#FFFFFF";
@@ -753,33 +981,48 @@ function buildPositionMapImage(s) {
   }
   ctx.restore();
 
-  // Legend
+  // Legend — row 1: student squares; row 2: TA dots
   const legendY = headerH + plotH + 14;
   ctx.textAlign = "left";
-  const barX = 24, barW = 260, barY = legendY + 8, barH = 10;
+  const barX = 24, barW = 260, barY = legendY + 6, barH = 10;
+  ctx.fillStyle = "#1A1814";
+  ctx.font = "600 11px Inter, sans-serif";
+  ctx.fillText("Student squares — total time hand raised", barX, barY - 2);
   const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
   for (let i = 0; i <= 10; i++) grad.addColorStop(i / 10, rainbowColor(i / 10));
   ctx.fillStyle = grad;
-  roundRect(ctx, barX, barY, barW, barH, 5);
+  roundRect(ctx, barX, barY + 6, barW, barH, 5);
   ctx.fill();
   ctx.fillStyle = "#4A4740";
   ctx.font = "600 10px 'DM Mono', monospace";
-  ctx.fillText("1st position", barX, barY + 24);
+  ctx.fillText("brief", barX, barY + 30);
   ctx.textAlign = "right";
-  ctx.fillText("last position", barX + barW, barY + 24);
+  ctx.fillText(maxHandSec > 0 ? `longest (${formatTime(maxHandSec)})` : "longest", barX + barW, barY + 30);
   ctx.textAlign = "left";
 
-  const szX = barX + barW + 70;
-  ctx.beginPath(); ctx.arc(szX, barY + 4, 6, 0, Math.PI * 2);
-  ctx.fillStyle = "#8A877E"; ctx.fill();
+  const nsX = barX + barW + 40;
+  ctx.fillStyle = "#FFFFFF"; ctx.strokeStyle = "#C2D0E4"; ctx.lineWidth = 1.5;
+  roundRect(ctx, nsX, barY + 4, 14, 14, 3);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#4A4740"; ctx.font = "400 11px Inter, sans-serif";
+  ctx.fillText("never raised a hand", nsX + 22, barY + 15);
+
+  const dotY = barY + 56;
+  ctx.fillStyle = "#1A1814";
+  ctx.font = "600 11px Inter, sans-serif";
+  ctx.fillText("TA positions — number = order, size = time spent there", barX, dotY + 4);
+  const szX = barX + 360;
+  ctx.beginPath(); ctx.arc(szX, dotY, 6, 0, Math.PI * 2);
+  ctx.fillStyle = TA_DOT_COLOR; ctx.fill();
   ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = "#4A4740"; ctx.font = "400 11px Inter, sans-serif";
-  ctx.fillText("brief stop", szX + 14, barY + 8);
+  ctx.fillText("brief stop", szX + 14, dotY + 4);
 
-  ctx.beginPath(); ctx.arc(szX + 110, barY + 4, 15, 0, Math.PI * 2);
-  ctx.fillStyle = "#8A877E"; ctx.fill();
+  ctx.beginPath(); ctx.arc(szX + 110, dotY, 13, 0, Math.PI * 2);
+  ctx.fillStyle = TA_DOT_COLOR; ctx.fill();
   ctx.strokeStyle = "#FFFFFF"; ctx.stroke();
-  ctx.fillText("longer stop", szX + 130, barY + 8);
+  ctx.fillStyle = "#4A4740";
+  ctx.fillText("longer stop", szX + 130, dotY + 4);
 
   return canvas;
 }
@@ -799,10 +1042,42 @@ let lastFilename = null;
 let lastImageDataUrl = null;
 let lastImageFilename = null;
 
+/* Before exporting, nudge the observer to fill in the Comments page — it's
+   easy to forget. They can still export without it. */
+function missingComments() {
+  const missing = [];
+  if (!(obsSession.bestComments || "").trim()) missing.push("What went best");
+  if (!(obsSession.improveComments || "").trim()) missing.push("What needs improvement");
+  return missing;
+}
+
 function endObservation() {
   if (!obsSession) return;
+  const missing = missingComments();
+  if (missing.length) {
+    $("comments-modal-missing").textContent = `Still empty: ${missing.join(" and ")}.`;
+    $("comments-modal").classList.remove("hidden");
+    return;
+  }
   if (!confirm("End this observation and export the CSV and position map? You can download them again afterward if needed.")) return;
+  finishObservation();
+}
 
+function goToComments() {
+  $("comments-modal").classList.add("hidden");
+  showObsPage("comments");
+  const empty = ["obs-comment-best", "obs-comment-improve"].map($).find(el => !el.value.trim());
+  if (empty) empty.focus();
+}
+
+function exportWithoutComments() {
+  $("comments-modal").classList.add("hidden");
+  finishObservation();
+}
+
+function finishObservation() {
+  if (!obsSession) return;
+  setSeatEditMode(false);
   if (obsSession.timerRunning) {
     obsSession.accumMs += Date.now() - obsSession.segmentStart;
     obsSession.segmentStart = null;
@@ -812,6 +1087,7 @@ function endObservation() {
   obsSession.totalSeconds = currentElapsedSeconds();
   obsSession.active = false;
   obsSession.endedAt = new Date().toISOString();
+  closeHands(() => true, "Still raised when observation ended");
 
   lastCSV = buildCSV(obsSession);
   lastFilename = buildFilename(obsSession);
@@ -827,7 +1103,7 @@ function endObservation() {
   const totalItems = CHECKLIST.reduce((s, c) => s + c.items.length, 0);
   $("done-summary").textContent =
     `${obsSession.ta} · ${obsSession.section} · ${formatDateNice(obsSession.date)} — ` +
-    `${formatTime(obsSession.totalSeconds)} observed, ${checkedCount}/${totalItems} checklist items, ${obsSession.positions.length} positions logged.`;
+    `${formatTime(obsSession.totalSeconds)} observed, ${checkedCount}/${totalItems} checklist items, ${obsSession.positions.length} positions logged, ${(obsSession.hands || []).length} hand raises.`;
 
   showScreen("screen-done");
 }
@@ -860,6 +1136,7 @@ function buildCSV(s) {
   lines.push(`Section,${csvField(s.section)}`);
   lines.push(`Observation Date,${csvField(s.date)}`);
   lines.push(`Number of Tables,${csvField(s.tableCount)}`);
+  lines.push(`Students per Table,${csvField(s.tables.map(t => `T${t.id}: ${t.students != null ? t.students : DEFAULT_STUDENTS}`).join("; "))}`);
   lines.push(`Total Observation Time,${csvField(formatTime(s.totalSeconds))}`);
   lines.push(`Total Observation Time (seconds),${csvField(s.totalSeconds)}`);
   lines.push("");
@@ -874,10 +1151,34 @@ function buildCSV(s) {
   });
   lines.push("");
   lines.push("=== TA POSITION LOG ===");
-  lines.push(["#", "WallClockTime", "ElapsedSeconds", "Description", "Nearest Table", "X%", "Y%"].map(csvField).join(","));
+  lines.push(["#", "WallClockTime", "ElapsedSeconds", "Description", "Nearest Table", "X%", "Y%", "Hands Raised When Logged"].map(csvField).join(","));
   s.positions.forEach((p, i) => {
     const nearestLabel = p.nearestTableId ? `Table ${p.nearestTableId}` : "";
-    lines.push([i + 1, p.wallTime, p.elapsedSec, p.desc, nearestLabel, p.x, p.y].map(csvField).join(","));
+    lines.push([i + 1, p.wallTime, p.elapsedSec, p.desc, nearestLabel, p.x, p.y, (p.handsUp || []).join("; ")].map(csvField).join(","));
+  });
+  lines.push("");
+  lines.push("=== STUDENT HAND-RAISE LOG ===");
+  lines.push(["#", "Table", "Student", "Student ID", "Raised (clock)", "Raised (elapsed s)", "Lowered (clock)", "Lowered (elapsed s)", "Duration (s)", "TA Location When Raised", "TA Location When Lowered", "Note"].map(csvField).join(","));
+  const hands = (s.hands || []).slice().sort((a, b) => a.raisedMs - b.raisedMs);
+  hands.forEach((h, i) => {
+    lines.push([
+      i + 1, h.table, h.student, `T${h.table}-S${h.student}`,
+      h.raisedWall, Math.round(h.raisedMs / 1000),
+      h.loweredWall, h.loweredMs != null ? Math.round(h.loweredMs / 1000) : "",
+      handDurationSec(h, (s.totalSeconds || 0) * 1000),
+      h.taAtRaise, h.taAtLower, h.note,
+    ].map(csvField).join(","));
+  });
+  lines.push("");
+  lines.push("=== STUDENT HAND-RAISE SUMMARY ===");
+  lines.push(["Table", "Student", "Student ID", "Times Raised", "Total Raised (s)"].map(csvField).join(","));
+  const totals = studentHandTotals(s);
+  s.tables.forEach(t => {
+    const count = t.students != null ? t.students : DEFAULT_STUDENTS;
+    for (let k = 1; k <= count; k++) {
+      const tot = totals[`${t.id}-${k}`] || { sec: 0, count: 0 };
+      lines.push([t.id, k, `T${t.id}-S${k}`, tot.count, tot.sec].map(csvField).join(","));
+    }
   });
   lines.push("");
   lines.push("=== QUALITATIVE COMMENTS ===");
@@ -920,6 +1221,8 @@ function tryResume() {
   if (!resume) { clearAutosave(); return; }
 
   obsSession = saved;
+  if (!obsSession.hands) obsSession.hands = [];
+  obsSession.tables.forEach(t => { if (t.students == null) t.students = DEFAULT_STUDENTS; });
   if (obsSession.segmentStart) obsSession.accumMs += Date.now() - obsSession.segmentStart;
   obsSession.segmentStart = null;
   obsSession.timerRunning = false;
