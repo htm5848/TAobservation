@@ -328,8 +328,8 @@ function computeMapLayout(tables, rect) {
   const cols = n <= 4 ? 2 : n <= 9 ? 3 : 4;
   const rows = Math.ceil(n / cols);
   const cellW = areaW / cols, cellH = areaH / rows;
-  const w = cellW * 0.7;
-  const h = Math.min(cellH * 0.7, ((w / 100 * rect.width) * 0.75) / rect.height * 100);  // keep tables roughly 4:3
+  const w = cellW * 0.45;
+  const h = Math.min(cellH * 0.45, ((w / 100 * rect.width) * 0.75) / rect.height * 100);  // keep tables roughly 4:3
   return tables.map((t, i) => {
     const col = i % cols, row = Math.floor(i / cols);
     return {
@@ -371,7 +371,6 @@ function renderObsMap() {
     const zone = document.createElement("div");
     zone.className = "map-zone";
     Object.assign(zone.style, { left: t.zone.x + "%", top: t.zone.y + "%", width: t.zone.w + "%", height: t.zone.h + "%" });
-    zone.innerHTML = `<span class="zone-name">Table ${t.id} area</span>`;
     zone.addEventListener("click", e => {
       e.stopPropagation();
       const r = canvas.getBoundingClientRect();
