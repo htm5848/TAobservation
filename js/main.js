@@ -86,10 +86,6 @@ const CHECKLIST = [
   },
 ];
 
-const DEFAULT_STUDENTS = 4;     // students seated at each table when a session starts
-const MAX_STUDENTS = 10;        // per-table upper limit for the seat stepper
-const MISTAP_MS = 1500;         // a hand lowered this soon after raising is treated as a mis-tap and dropped
-
 const STORAGE_KEY = "phys211obs_session_v1";
 const LAST_NETID_KEY = "phys211obs_last_netid";
 
@@ -123,15 +119,11 @@ function formatTime(totalSeconds) {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-function currentElapsedMs() {
+function currentElapsedSeconds() {
   if (!obsSession) return 0;
   let ms = obsSession.accumMs || 0;
   if (obsSession.timerRunning && obsSession.segmentStart) ms += Date.now() - obsSession.segmentStart;
-  return ms;
-}
-
-function currentElapsedSeconds() {
-  return Math.round(currentElapsedMs() / 1000);
+  return Math.round(ms / 1000);
 }
 
 function autosave() {
@@ -195,7 +187,6 @@ function resetSetupForm() {
   $("setup-section").value = "";
   $("setup-ta-name").value = "";
   $("setup-table-count").value = 6;
-  $("setup-student-count").value = DEFAULT_STUDENTS;
   const today = new Date();
   $("setup-date").value = today.toISOString().slice(0, 10);
   $("setup-warning").style.display = "none";
@@ -208,18 +199,11 @@ function stepTables(delta) {
   input.value = v;
 }
 
-function stepStudentsSetup(delta) {
-  const input = $("setup-student-count");
-  let v = parseInt(input.value || String(DEFAULT_STUDENTS), 10) + delta;
-  input.value = Math.max(0, Math.min(MAX_STUDENTS, v));
-}
-
 function startObservation() {
   const section = $("setup-section").value;
   const ta = $("setup-ta-name").value;
   const date = $("setup-date").value;
   const n = parseInt($("setup-table-count").value || "6", 10);
-  const spt = parseInt($("setup-student-count").value || String(DEFAULT_STUDENTS), 10);
   const warn = $("setup-warning");
 
   if (!section) {
@@ -238,11 +222,9 @@ function startObservation() {
     netid: currentNetID,
     section, ta, date,
     tableCount: n,
-    defaultStudents: spt,
-    tables: Array.from({ length: n }, (_, i) => ({ id: i + 1, students: spt })),
+    tables: Array.from({ length: n }, (_, i) => ({ id: i + 1 })),
     podium: { pos: null },          // the only movable object on the map; {x,y} in % of canvas
     positions: [],
-    hands: [],                      // hand-raise intervals, one per raise (see toggleHand)
     checklist: {},
     bestComments: "",
     improveComments: "",
@@ -326,11 +308,9 @@ function stepTablesLive(delta) {
   n = Math.max(2, Math.min(16, n));
   if (n === obsSession.tableCount) return;
   if (n > obsSession.tableCount) {
-    const spt = obsSession.defaultStudents != null ? obsSession.defaultStudents : DEFAULT_STUDENTS;
-    for (let i = obsSession.tableCount; i < n; i++) obsSession.tables.push({ id: i + 1, students: spt });
+    for (let i = obsSession.tableCount; i < n; i++) obsSession.tables.push({ id: i + 1 });
   } else {
     obsSession.tables = obsSession.tables.slice(0, n);
-    closeHands(h => h.table > n, "Table removed");
   }
   obsSession.tableCount = n;
   $("map-table-count").value = n;
@@ -338,59 +318,25 @@ function stepTablesLive(delta) {
   autosave();
 }
 
-/* The room below the front strip is split into a grid with one AREA per
-   table; solid lines between areas make it unambiguous which table the TA
-   is at. Each area has a header (table name + seat − / +) and the TABLE: a
-   rectangle with its students sitting inside it as squares in two rows
-   (1–2 on top, 3–4 below for the default four; extra students add columns).
-   Geometry is returned in % of the canvas (seat size in px) so the live map
-   and the exported PNG share it. `opts` sets the seat size/gap/padding —
-   the PNG uses larger seats so several raise-squares fit in each one. */
-const ZONE_HEAD = 28;
-
-function seatGrid(count) {
-  return { cols: Math.max(1, Math.ceil(count / 2)), rows: count > 1 ? 2 : 1 };
-}
-
-function computeMapLayout(tables, rect, opts = {}) {
-  const SEAT = opts.seat || 26, GAP = opts.gap || 6, PAD = opts.pad || 7;
+/* Each table sits in the middle of its own AREA (one grid cell); solid lines
+   between areas show which part of the room belongs to which table. */
+function computeMapLayout(tables, rect) {
   const n = tables.length;
-  const W = rect.width, H = rect.height;
-  const topPx = 100, padPx = 6;                    // ~100px up front for the label + podium
+  const areaX = 1, areaW = 98;
+  const areaY = (100 / rect.height) * 100;          // leave ~100px up front for the label + podium
+  const areaH = 99 - areaY;
   const cols = n <= 4 ? 2 : n <= 9 ? 3 : 4;
   const rows = Math.ceil(n / cols);
-  const zw = (W - padPx * 2) / cols, zh = (H - topPx - padPx) / rows;
-  const countOf = t => (t.students != null ? t.students : DEFAULT_STUDENTS);
-  const widest = Math.max(1, ...tables.map(t => seatGrid(countOf(t)).cols));
-  const k = Math.max(0.5, Math.min(1,
-    (zw - 16) / (widest * SEAT + (widest - 1) * GAP + 2 * PAD),
-    (zh - ZONE_HEAD - 14) / (2 * SEAT + GAP + 2 * PAD)));
-  const seat = SEAT * k, gap = GAP * k, pad = PAD * k;
-  const px = v => v / W * 100, py = v => v / H * 100;
+  const cellW = areaW / cols, cellH = areaH / rows;
+  const w = cellW * 0.7;
+  const h = Math.min(cellH * 0.7, ((w / 100 * rect.width) * 0.75) / rect.height * 100);  // keep tables roughly 4:3
   return tables.map((t, i) => {
     const col = i % cols, row = Math.floor(i / cols);
-    const zx = padPx + col * zw, zy = topPx + row * zh;
-    const cx = zx + zw / 2, cy = zy + ZONE_HEAD + (zh - ZONE_HEAD) / 2;
-    const count = countOf(t);
-    const g = seatGrid(count);
-    const tw = Math.max(g.cols * seat + (g.cols - 1) * gap + 2 * pad, 2 * seat);
-    const th = Math.max(g.rows * seat + (g.rows - 1) * gap + 2 * pad, seat + 2 * pad);
-    const seats = Array.from({ length: count }, (_, s) => {
-      const r = s < g.cols ? 0 : 1, c = r === 0 ? s : s - g.cols;
-      const inRow = r === 0 ? Math.min(count, g.cols) : count - g.cols;
-      const rowW = inRow * seat + (inRow - 1) * gap;
-      const rowsH = g.rows * seat + (g.rows - 1) * gap;
-      return {
-        num: s + 1,
-        x: px(cx - rowW / 2 + c * (seat + gap) + seat / 2),
-        y: py(cy - rowsH / 2 + r * (seat + gap) + seat / 2),
-      };
-    });
     return {
-      id: t.id,
-      zone: { x: px(zx), y: py(zy), w: px(zw), h: py(zh) },
-      x: px(cx - tw / 2), y: py(cy - th / 2), w: px(tw), h: py(th),
-      seats, seatPx: seat,
+      id: t.id, w, h,
+      x: areaX + col * cellW + (cellW - w) / 2,
+      y: areaY + row * cellH + (cellH - h) / 2,
+      zone: { x: areaX + col * cellW, y: areaY + row * cellH, w: cellW, h: cellH },
     };
   });
 }
@@ -400,7 +346,7 @@ function renderObsMap() {
   if (!canvas || !obsSession) return;
   const rect = canvas.getBoundingClientRect();
   if (!rect.width || !rect.height) return;   // canvas hidden (Comments page)
-  canvas.querySelectorAll(".map-zone, .map-table-node, .seat, .map-landmark-node").forEach(n => n.remove());
+  canvas.querySelectorAll(".map-zone, .map-table-node, .map-landmark-node").forEach(n => n.remove());
 
   // Podium (draggable). Default: front-left, under the label strip.
   if (!obsSession.podium) obsSession.podium = { pos: null };
@@ -418,65 +364,38 @@ function renderObsMap() {
           pos.y + (podium.offsetHeight / 2) / r.height * 100, "At the podium", "Podium");
   });
 
-  // Log the TA where the area/table was tapped (so the dot doesn't sit on the students).
-  const logTap = (e, desc, t) => {
-    e.stopPropagation();
-    const r = canvas.getBoundingClientRect();
-    const x = Math.round((e.clientX - r.left) / r.width * 100), y = Math.round((e.clientY - r.top) / r.height * 100);
-    drawDot(x, y, obsSession.positions.length + 1);
-    addPositionLog(desc, `Table ${t.id}`, x, y, t.id);
-  };
-
-  // Table areas, tables, and student seats (fixed)
+  // Tables (fixed)
   mapLayout.tables = computeMapLayout(obsSession.tables, rect);
   mapLayout.tables.forEach(t => {
+    // The table's area: tapping anywhere in it (off the table) logs "Near Table N" where tapped
     const zone = document.createElement("div");
     zone.className = "map-zone";
     Object.assign(zone.style, { left: t.zone.x + "%", top: t.zone.y + "%", width: t.zone.w + "%", height: t.zone.h + "%" });
-    zone.innerHTML = `<div class="zone-head">
-        <span class="zone-name">Table ${t.id}</span>
-        <span class="zone-seats">
-          <button type="button" class="zone-seat-btn" aria-label="Remove a seat at table ${t.id}">−</button>
-          <span class="zone-seat-count">${t.seats.length}</span>
-          <button type="button" class="zone-seat-btn" aria-label="Add a seat at table ${t.id}">+</button>
-        </span>
-      </div>`;
-    const [minus, plus] = zone.querySelectorAll(".zone-seat-btn");
-    minus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, -1); });
-    plus.addEventListener("click", e => { e.stopPropagation(); changeSeats(t.id, 1); });
-    zone.querySelector(".zone-seats").addEventListener("click", e => e.stopPropagation());
-    zone.addEventListener("click", e => logTap(e, `Near Table ${t.id}`, t));
+    zone.innerHTML = `<span class="zone-name">Table ${t.id} area</span>`;
+    zone.addEventListener("click", e => {
+      e.stopPropagation();
+      const r = canvas.getBoundingClientRect();
+      const x = Math.round((e.clientX - r.left) / r.width * 100), y = Math.round((e.clientY - r.top) / r.height * 100);
+      drawDot(x, y, obsSession.positions.length + 1);
+      addPositionLog(`Near Table ${t.id}`, `Table ${t.id}`, x, y, t.id);
+    });
     canvas.appendChild(zone);
 
     const node = document.createElement("div");
     node.className = "map-table-node";
-    Object.assign(node.style, { left: t.x + "%", top: t.y + "%", width: t.w + "%", height: t.h + "%" });
-    node.addEventListener("click", e => logTap(e, `Table ${t.id}`, t));
-    canvas.appendChild(node);
-
-    t.seats.forEach(st => {
-      const up = !!openHand(t.id, st.num);
-      const seat = document.createElement("button");
-      seat.type = "button";
-      seat.className = "seat" + (up ? " on" : "");
-      seat.setAttribute("aria-pressed", up);
-      seat.setAttribute("aria-label", `Table ${t.id}, student ${st.num}: hand ${up ? "raised" : "down"}`);
-      Object.assign(seat.style, {
-        left: st.x + "%", top: st.y + "%",
-        width: t.seatPx + "px", height: t.seatPx + "px",
-        fontSize: Math.round(t.seatPx * 0.42) + "px",
-      });
-      seat.textContent = st.num;
-      seat.addEventListener("click", e => {
-        e.stopPropagation();
-        toggleHand(t.id, st.num);
-      });
-      canvas.appendChild(seat);
+    node.style.left = t.x + "%";
+    node.style.top = t.y + "%";
+    node.style.width = t.w + "%";
+    node.style.height = t.h + "%";
+    node.innerHTML = `<div class="t-label">TABLE</div><div class="t-num">${t.id}</div>`;
+    node.addEventListener("click", e => {
+      e.stopPropagation();
+      logAt(t.x + t.w / 2, t.y + t.h / 2, `Table ${t.id}`, `Table ${t.id}`);
     });
+    canvas.appendChild(node);
   });
 
   redrawDots();
-  updateHandsCount();
 }
 
 /* Pointer-based drag for the podium only (works for mouse AND touch; HTML5
@@ -511,87 +430,6 @@ function attachPodiumDrag(node, pos, onTap) {
   node.addEventListener("pointercancel", () => { drag = null; });
 }
 
-/* ── Add / remove seats at one table (− / + in its area header) ─────── */
-function changeSeats(tableId, delta) {
-  const t = obsSession && obsSession.tables.find(x => x.id === tableId);
-  if (!t) return;
-  const cur = t.students != null ? t.students : DEFAULT_STUDENTS;
-  const n = Math.max(0, Math.min(MAX_STUDENTS, cur + delta));
-  if (n === cur) return;
-  t.students = n;
-  closeHands(h => h.table === tableId && h.student > n, "Seat removed");
-  renderObsMap();
-  autosave();
-}
-
-/* ── Student hand raises ──────────────────────────────────────────────────
-   Tap a student's square when they raise a hand, tap again when it goes
-   down. Each raise is stored as one interval (raised → lowered) with the
-   TA's most recently logged location at both ends, so the CSV can show
-   whether the TA went to raised hands or was just rotating. */
-function lastPositionDesc() {
-  const p = obsSession.positions[obsSession.positions.length - 1];
-  return p ? p.desc : "";
-}
-
-function openHand(tableId, student) {
-  return obsSession && (obsSession.hands || []).find(h => h.table === tableId && h.student === student && h.loweredMs == null);
-}
-
-function raisedHandLabels() {
-  return (obsSession.hands || []).filter(h => h.loweredMs == null).map(h => `T${h.table}-S${h.student}`);
-}
-
-function toggleHand(tableId, student) {
-  if (!obsSession) return;
-  if (!obsSession.hands) obsSession.hands = [];
-  const open = openHand(tableId, student);
-  if (open) {
-    if (Date.now() - open.raisedAtWall < MISTAP_MS) {
-      obsSession.hands.splice(obsSession.hands.indexOf(open), 1);   // quick double-tap = mis-tap
-    } else {
-      open.loweredMs = currentElapsedMs();
-      open.loweredWall = new Date().toLocaleTimeString();
-      open.taAtLower = lastPositionDesc();
-    }
-  } else {
-    obsSession.hands.push({
-      table: tableId, student,
-      raisedMs: currentElapsedMs(),
-      raisedWall: new Date().toLocaleTimeString(),
-      raisedAtWall: Date.now(),
-      taAtRaise: lastPositionDesc(),
-      loweredMs: null, loweredWall: "", taAtLower: "", note: "",
-    });
-  }
-  renderObsMap();
-  autosave();
-}
-
-/* Lower every open hand matching `pred` right now (table/seat removed, or
-   the observation ended), noting why. */
-function closeHands(pred, note) {
-  if (!obsSession || !obsSession.hands) return;
-  const ms = currentElapsedMs(), wall = new Date().toLocaleTimeString(), ta = lastPositionDesc();
-  obsSession.hands.forEach(h => {
-    if (h.loweredMs == null && pred(h)) {
-      h.loweredMs = ms; h.loweredWall = wall; h.taAtLower = ta; h.note = note;
-    }
-  });
-}
-
-function handDurationSec(h, endMs) {
-  const end = h.loweredMs != null ? h.loweredMs : endMs;
-  return Math.max(0, Math.round((end - h.raisedMs) / 1000));
-}
-
-function updateHandsCount() {
-  const el = $("obs-hands-count");
-  if (!el || !obsSession) return;
-  const n = raisedHandLabels().length;
-  el.textContent = n ? `✋ ${n} hand${n === 1 ? "" : "s"} up` : "";
-}
-
 /* Find whichever table's center is spatially closest to a point (in % of
    canvas), regardless of distance — used so every logged position (table
    tap, podium tap, or open-floor tap) always has a "nearest table" on
@@ -618,19 +456,21 @@ function logAt(xPct, yPct, desc, near) {
   addPositionLog(desc, near, x, y, nearestTable ? nearestTable.id : null);
 }
 
-/* Tap on open floor (outside every table zone): log where they tapped. */
+/* Tap on open floor: log where they tapped, or "Near Table N" if close to one. */
 function logObsPosition(event) {
-  if (event.target.closest(".map-zone, .map-table-node, .seat, .map-landmark-node")) return;
+  if (event.target.closest(".map-zone, .map-table-node, .map-landmark-node")) return;
   if (!obsSession) return;
   const rect = $("obs-canvas").getBoundingClientRect();
   const xPct = ((event.clientX - rect.left) / rect.width) * 100;
   const yPct = ((event.clientY - rect.top) / rect.height) * 100;
 
   const nearestTable = nearestTableToPct(xPct, yPct, rect);
+  const near = nearestTable && nearestTable.dist < 55 ? nearestTable : null;
   const x = Math.round(xPct), y = Math.round(yPct);
+  const desc = near ? `Near Table ${near.id}` : `Open area (${x}%, ${y}%)`;
 
   drawDot(x, y, obsSession.positions.length + 1);
-  addPositionLog(`Open area (${x}%, ${y}%)`, "", x, y, nearestTable ? nearestTable.id : null);
+  addPositionLog(desc, near ? `Table ${near.id}` : "", x, y, nearestTable ? nearestTable.id : null);
 }
 
 function drawDot(xPct, yPct, num) {
@@ -658,7 +498,6 @@ function addPositionLog(desc, nearTable, xPct, yPct, nearestTableId) {
     elapsedSec: currentElapsedSeconds(),
     desc, nearTable, x: xPct, y: yPct,
     nearestTableId: nearestTableId || null,
-    handsUp: raisedHandLabels(),
   });
   renderPosLog();
   autosave();
@@ -774,15 +613,12 @@ function bindComments() {
 
 /* ── Position-map image (PNG) ─────────────────────────────────────────────
    Rendered fresh onto an off-screen <canvas> at export time — independent of
-   the live map's on-screen size, but using the same table layout
-   (computeMapLayout) so the geometry matches what was observed.
-   COLOUR = WHEN something happened, on one red → purple scale running from
-   the start to the end of the observation — shared by TA circles and
-   student squares, so same colour ≈ same moment in the session.
-   SIZE = HOW LONG: a TA circle's radius is the time spent at that spot
-   (until the next logged position); a student square's side is how long
-   that one raise lasted. Every raise is its own square, drawn side by side
-   inside that student's seat, so repeat askers show several squares. */
+   the live map's on-screen size, but using the same percent-based table
+   layout (computeMapLayout) so the geometry matches what was observed.
+   Dot RADIUS encodes how long the TA stood at that spot (time until the
+   next logged position, or until the session ended for the last one).
+   Dot COLOR encodes chronological order along a red → purple rainbow, so
+   the first position is red and the last is purple. */
 function rainbowColor(t) {
   // t in [0,1]: 0=red, ~0.17=orange, ~0.33=yellow, ~0.5=green, ~0.67=blue, 1=violet/purple
   const hue = Math.max(0, Math.min(1, t)) * 270;
@@ -808,63 +644,12 @@ function positionDurations(s) {
   });
 }
 
-function studentHandTotals(s) {
-  const totals = {};
-  (s.hands || []).forEach(h => {
-    const key = `${h.table}-${h.student}`;
-    if (!totals[key]) totals[key] = { sec: 0, count: 0 };
-    totals[key].sec += handDurationSec(h, (s.totalSeconds || 0) * 1000);
-    totals[key].count += 1;
-  });
-  return totals;
-}
-
-/* Side (px) of one raise-square: small for a brief raise, larger for a long
-   one (area ∝ duration), relative to the longest single raise. */
-function raiseSquareSize(sec, maxSec, maxS) {
-  const minS = Math.min(10, maxS);
-  if (!(maxSec > 0)) return minS;
-  return minS + (maxS - minS) * Math.sqrt(Math.min(1, sec / maxSec));
-}
-
-/* Lay squares of the given sizes out in centred rows inside a box; shrink
-   them all until they fit. Returns [{x, y, size}] relative to the box. */
-function packSquares(sizes, boxW, boxH, gap) {
-  for (let f = 1; f > 0.2; f *= 0.85) {
-    const rows = [[]];
-    let rowW = 0;
-    sizes.forEach((sz0, i) => {
-      const sz = sz0 * f;
-      if (rows[rows.length - 1].length && rowW + gap + sz > boxW) { rows.push([]); rowW = 0; }
-      rowW += (rows[rows.length - 1].length ? gap : 0) + sz;
-      rows[rows.length - 1].push({ i, size: sz });
-    });
-    const rowH = rows.map(r => Math.max(...r.map(q => q.size)));
-    const totalH = rowH.reduce((a, b) => a + b, 0) + gap * (rows.length - 1);
-    const fitsW = rows.every(r => r.reduce((a, q) => a + q.size, 0) + gap * (r.length - 1) <= boxW);
-    if (totalH <= boxH && fitsW) {
-      const out = [];
-      let y = (boxH - totalH) / 2;
-      rows.forEach((r, ri) => {
-        const w = r.reduce((a, q) => a + q.size, 0) + gap * (r.length - 1);
-        let x = (boxW - w) / 2;
-        r.forEach(q => { out[q.i] = { x, y: y + (rowH[ri] - q.size) / 2, size: q.size }; x += q.size + gap; });
-        y += rowH[ri] + gap;
-      });
-      return out;
-    }
-  }
-  return sizes.map(() => ({ x: 0, y: 0, size: 4 }));
-}
-
 function buildPositionMapImage(s) {
-  const W = 1000, headerH = 64, legendH = 104, plotH = 640;
+  const W = 1000, headerH = 64, legendH = 64, plotH = 640;
   const H = headerH + plotH + legendH;
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
-  const endSec = Math.max(1, s.totalSeconds || 0);
-  const whenColor = sec => rainbowColor(sec / endSec);
 
   ctx.fillStyle = "#FFFFFF";
   ctx.fillRect(0, 0, W, H);
@@ -878,7 +663,7 @@ function buildPositionMapImage(s) {
   ctx.fillStyle = "#4A4740";
   ctx.font = "400 13px Inter, sans-serif";
   ctx.fillText(
-    `Observer ${s.netid} · ${formatDateNice(s.date)} · ${formatTime(s.totalSeconds)} observed · ${s.positions.length} position${s.positions.length === 1 ? "" : "s"} logged · ${(s.hands || []).length} hand raise${(s.hands || []).length === 1 ? "" : "s"}`,
+    `Observer ${s.netid} · ${formatDateNice(s.date)} · ${formatTime(s.totalSeconds)} observed · ${s.positions.length} position${s.positions.length === 1 ? "" : "s"} logged`,
     24, 50
   );
 
@@ -902,11 +687,7 @@ function buildPositionMapImage(s) {
   ctx.textAlign = "left";
 
   const plotRect = { width: W, height: plotH };
-  const tables = computeMapLayout(s.tables, plotRect, { seat: 64, gap: 8, pad: 10 });
-  const hands = s.hands || [];
-  const endMs = (s.totalSeconds || 0) * 1000;
-  const maxRaiseSec = Math.max(0, ...hands.map(h => handDurationSec(h, endMs)));
-  const raiseSquares = [];   // drawn last, on top of the TA circles
+  const tables = computeMapLayout(s.tables, plotRect);
   tables.forEach(t => {
     // Table area with solid dividing lines
     const zx = t.zone.x / 100 * W, zy = t.zone.y / 100 * plotH, zw = t.zone.w / 100 * W, zh = t.zone.h / 100 * plotH;
@@ -915,41 +696,20 @@ function buildPositionMapImage(s) {
     ctx.strokeStyle = "#8FA3C0";
     ctx.lineWidth = 2;
     ctx.strokeRect(zx, zy, zw, zh);
-    ctx.fillStyle = "#13294B";
-    ctx.font = "700 12px 'DM Mono', monospace";
-    ctx.textAlign = "left";
-    ctx.fillText(`TABLE ${t.id}`, zx + 10, zy + 18);
-
+  });
+  tables.forEach(t => {
     const x = t.x / 100 * W, y = t.y / 100 * plotH, w = t.w / 100 * W, h = t.h / 100 * plotH;
     ctx.fillStyle = "#E8EEF6";
     ctx.strokeStyle = "#C2D0E4";
     ctx.lineWidth = 2;
     roundRect(ctx, x, y, w, h, 8);
     ctx.fill(); ctx.stroke();
-
-    // Each seat: an outlined cell holding one square per raise
-    t.seats.forEach(st => {
-      const sz = t.seatPx, sx = st.x / 100 * W - sz / 2, sy = st.y / 100 * plotH - sz / 2;
-      ctx.fillStyle = "#FFFFFF";
-      ctx.strokeStyle = "#C2D0E4";
-      ctx.lineWidth = 1.5;
-      roundRect(ctx, sx, sy, sz, sz, 5);
-      ctx.fill(); ctx.stroke();
-      ctx.fillStyle = "#8A877E";
-      ctx.font = "700 9px 'DM Mono', monospace";
-      ctx.textAlign = "left";
-      ctx.fillText(String(st.num), sx + 4, sy + 11);
-
-      const mine = hands.filter(hd => hd.table === t.id && hd.student === st.num).sort((p, q) => p.raisedMs - q.raisedMs);
-      if (!mine.length) return;
-      const inner = sz - 8;
-      const sizes = mine.map(hd => raiseSquareSize(handDurationSec(hd, endMs), maxRaiseSec, inner * 0.7));
-      const placed = packSquares(sizes, inner, inner - 6, 3);
-      mine.forEach((hd, i) => {
-        const q = placed[i];
-        raiseSquares.push({ x: sx + 4 + q.x, y: sy + 10 + q.y, size: q.size, color: whenColor(hd.raisedMs / 1000) });
-      });
-    });
+    ctx.fillStyle = "#13294B";
+    ctx.textAlign = "center";
+    ctx.font = "700 10px 'DM Mono', monospace";
+    ctx.fillText("TABLE", x + w / 2, y + h / 2 - 4);
+    ctx.font = "700 16px 'DM Mono', monospace";
+    ctx.fillText(String(t.id), x + w / 2, y + h / 2 + 15);
     ctx.textAlign = "left";
   });
 
@@ -972,12 +732,12 @@ function buildPositionMapImage(s) {
     ctx.fillStyle = "#8A877E";
     ctx.font = "400 13px Inter, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("No TA positions were logged during this observation.", W / 2, 60);
+    ctx.fillText("No positions were logged during this observation.", W / 2, plotH / 2);
     ctx.textAlign = "left";
   } else {
     const durations = positionDurations(s);
     const minDur = Math.min(...durations), maxDur = Math.max(...durations);
-    const minR = 7, maxR = 24;
+    const minR = 7, maxR = 26;
     const radiusFor = d => {
       if (maxDur === minDur) return (minR + maxR) / 2;
       // sqrt scaling so dot AREA (not radius) is proportional to duration
@@ -987,7 +747,7 @@ function buildPositionMapImage(s) {
     const pts = s.positions.map(p => ({ x: p.x / 100 * W, y: p.y / 100 * plotH }));
 
     // Faint path connecting positions in order, so the rotation is legible
-    ctx.strokeStyle = "rgba(26,24,20,0.22)";
+    ctx.strokeStyle = "rgba(26,24,20,0.18)";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
@@ -995,20 +755,19 @@ function buildPositionMapImage(s) {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Slightly see-through so student squares underneath stay readable
-    ctx.globalAlpha = 0.85;
     pts.forEach((pt, i) => {
+      const t = pts.length > 1 ? i / (pts.length - 1) : 0;
       const r = radiusFor(durations[i]);
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = whenColor(s.positions[i].elapsedSec);
+      ctx.fillStyle = rainbowColor(t);
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = "#FFFFFF";
       ctx.stroke();
 
       ctx.fillStyle = "#FFFFFF";
-      ctx.strokeStyle = "rgba(0,0,0,0.4)";
+      ctx.strokeStyle = "rgba(0,0,0,0.35)";
       ctx.lineWidth = 3;
       ctx.font = `700 ${Math.max(9, Math.round(r * 0.75))}px 'DM Mono', monospace`;
       ctx.textAlign = "center";
@@ -1017,50 +776,36 @@ function buildPositionMapImage(s) {
       ctx.fillText(String(i + 1), pt.x, pt.y);
       ctx.textBaseline = "alphabetic";
     });
-    ctx.globalAlpha = 1;
   }
-
-  raiseSquares.forEach(q => {
-    ctx.fillStyle = q.color;
-    roundRect(ctx, q.x, q.y, q.size, q.size, Math.min(3, q.size / 4));
-    ctx.fill();
-    ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 1.5; ctx.stroke();
-  });
   ctx.restore();
 
-  // Legend — colour = when; sizes = how long
-  const legendY = headerH + plotH + 12;
-  const barX = 24, barW = 300;
+  // Legend
+  const legendY = headerH + plotH + 14;
   ctx.textAlign = "left";
-  ctx.fillStyle = "#1A1814";
-  ctx.font = "600 11px Inter, sans-serif";
-  ctx.fillText("Color = when it happened (TA circles and student squares)", barX, legendY + 10);
+  const barX = 24, barW = 260, barY = legendY + 8, barH = 10;
   const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
   for (let i = 0; i <= 10; i++) grad.addColorStop(i / 10, rainbowColor(i / 10));
   ctx.fillStyle = grad;
-  roundRect(ctx, barX, legendY + 18, barW, 10, 5);
+  roundRect(ctx, barX, barY, barW, barH, 5);
   ctx.fill();
   ctx.fillStyle = "#4A4740";
   ctx.font = "600 10px 'DM Mono', monospace";
-  ctx.fillText("start 00:00", barX, legendY + 42);
+  ctx.fillText("1st position", barX, barY + 24);
   ctx.textAlign = "right";
-  ctx.fillText(`end ${formatTime(s.totalSeconds)}`, barX + barW, legendY + 42);
+  ctx.fillText("last position", barX + barW, barY + 24);
   ctx.textAlign = "left";
 
-  const colX = barX + barW + 50;
-  ctx.fillStyle = "#1A1814";
-  ctx.font = "600 11px Inter, sans-serif";
-  ctx.fillText("Size = how long", colX, legendY + 10);
-  ctx.fillStyle = "#8A877E";
-  let lx = colX;
-  [12, 20, 30].forEach(sz => { roundRect(ctx, lx, legendY + 18 + (30 - sz) / 2, sz, sz, 3); ctx.fill(); lx += sz + 8; });
-  ctx.fillStyle = "#4A4740";
-  ctx.font = "400 11px Inter, sans-serif";
-  ctx.fillText("hand raised: short → long (one square per raise)", lx + 6, legendY + 38);
-  let dx = colX + 6;
-  [6, 10, 15].forEach(r => { ctx.beginPath(); ctx.arc(dx + r, legendY + 72, r, 0, Math.PI * 2); ctx.fillStyle = "#8A877E"; ctx.fill(); dx += 2 * r + 8; });
-  ctx.fillStyle = "#4A4740";
-  ctx.fillText("TA stop: brief → long (number = order)", dx + 4, legendY + 76);
+  const szX = barX + barW + 70;
+  ctx.beginPath(); ctx.arc(szX, barY + 4, 6, 0, Math.PI * 2);
+  ctx.fillStyle = "#8A877E"; ctx.fill();
+  ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = "#4A4740"; ctx.font = "400 11px Inter, sans-serif";
+  ctx.fillText("brief stop", szX + 14, barY + 8);
+
+  ctx.beginPath(); ctx.arc(szX + 110, barY + 4, 15, 0, Math.PI * 2);
+  ctx.fillStyle = "#8A877E"; ctx.fill();
+  ctx.strokeStyle = "#FFFFFF"; ctx.stroke();
+  ctx.fillText("longer stop", szX + 130, barY + 8);
 
   return canvas;
 }
@@ -1115,6 +860,7 @@ function exportWithoutComments() {
 
 function finishObservation() {
   if (!obsSession) return;
+
   if (obsSession.timerRunning) {
     obsSession.accumMs += Date.now() - obsSession.segmentStart;
     obsSession.segmentStart = null;
@@ -1124,7 +870,6 @@ function finishObservation() {
   obsSession.totalSeconds = currentElapsedSeconds();
   obsSession.active = false;
   obsSession.endedAt = new Date().toISOString();
-  closeHands(() => true, "Still raised when observation ended");
 
   lastCSV = buildCSV(obsSession);
   lastFilename = buildFilename(obsSession);
@@ -1140,7 +885,7 @@ function finishObservation() {
   const totalItems = CHECKLIST.reduce((s, c) => s + c.items.length, 0);
   $("done-summary").textContent =
     `${obsSession.ta} · ${obsSession.section} · ${formatDateNice(obsSession.date)} — ` +
-    `${formatTime(obsSession.totalSeconds)} observed, ${checkedCount}/${totalItems} checklist items, ${obsSession.positions.length} positions logged, ${(obsSession.hands || []).length} hand raises.`;
+    `${formatTime(obsSession.totalSeconds)} observed, ${checkedCount}/${totalItems} checklist items, ${obsSession.positions.length} positions logged.`;
 
   showScreen("screen-done");
 }
@@ -1173,7 +918,6 @@ function buildCSV(s) {
   lines.push(`Section,${csvField(s.section)}`);
   lines.push(`Observation Date,${csvField(s.date)}`);
   lines.push(`Number of Tables,${csvField(s.tableCount)}`);
-  lines.push(`Students per Table,${csvField(s.tables.map(t => `T${t.id}: ${t.students != null ? t.students : DEFAULT_STUDENTS}`).join("; "))}`);
   lines.push(`Total Observation Time,${csvField(formatTime(s.totalSeconds))}`);
   lines.push(`Total Observation Time (seconds),${csvField(s.totalSeconds)}`);
   lines.push("");
@@ -1188,34 +932,10 @@ function buildCSV(s) {
   });
   lines.push("");
   lines.push("=== TA POSITION LOG ===");
-  lines.push(["#", "WallClockTime", "ElapsedSeconds", "Description", "Nearest Table", "X%", "Y%", "Hands Raised When Logged"].map(csvField).join(","));
+  lines.push(["#", "WallClockTime", "ElapsedSeconds", "Description", "Nearest Table", "X%", "Y%"].map(csvField).join(","));
   s.positions.forEach((p, i) => {
     const nearestLabel = p.nearestTableId ? `Table ${p.nearestTableId}` : "";
-    lines.push([i + 1, p.wallTime, p.elapsedSec, p.desc, nearestLabel, p.x, p.y, (p.handsUp || []).join("; ")].map(csvField).join(","));
-  });
-  lines.push("");
-  lines.push("=== STUDENT HAND-RAISE LOG ===");
-  lines.push(["#", "Table", "Student", "Student ID", "Raised (clock)", "Raised (elapsed s)", "Lowered (clock)", "Lowered (elapsed s)", "Duration (s)", "TA Location When Raised", "TA Location When Lowered", "Note"].map(csvField).join(","));
-  const hands = (s.hands || []).slice().sort((a, b) => a.raisedMs - b.raisedMs);
-  hands.forEach((h, i) => {
-    lines.push([
-      i + 1, h.table, h.student, `T${h.table}-S${h.student}`,
-      h.raisedWall, Math.round(h.raisedMs / 1000),
-      h.loweredWall, h.loweredMs != null ? Math.round(h.loweredMs / 1000) : "",
-      handDurationSec(h, (s.totalSeconds || 0) * 1000),
-      h.taAtRaise, h.taAtLower, h.note,
-    ].map(csvField).join(","));
-  });
-  lines.push("");
-  lines.push("=== STUDENT HAND-RAISE SUMMARY ===");
-  lines.push(["Table", "Student", "Student ID", "Times Raised", "Total Raised (s)"].map(csvField).join(","));
-  const totals = studentHandTotals(s);
-  s.tables.forEach(t => {
-    const count = t.students != null ? t.students : DEFAULT_STUDENTS;
-    for (let k = 1; k <= count; k++) {
-      const tot = totals[`${t.id}-${k}`] || { sec: 0, count: 0 };
-      lines.push([t.id, k, `T${t.id}-S${k}`, tot.count, tot.sec].map(csvField).join(","));
-    }
+    lines.push([i + 1, p.wallTime, p.elapsedSec, p.desc, nearestLabel, p.x, p.y].map(csvField).join(","));
   });
   lines.push("");
   lines.push("=== QUALITATIVE COMMENTS ===");
@@ -1258,8 +978,6 @@ function tryResume() {
   if (!resume) { clearAutosave(); return; }
 
   obsSession = saved;
-  if (!obsSession.hands) obsSession.hands = [];
-  obsSession.tables.forEach(t => { if (t.students == null) t.students = DEFAULT_STUDENTS; });
   if (obsSession.segmentStart) obsSession.accumMs += Date.now() - obsSession.segmentStart;
   obsSession.segmentStart = null;
   obsSession.timerRunning = false;

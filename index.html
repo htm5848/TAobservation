@@ -79,16 +79,6 @@
         </div>
         <div class="field-hint">Typical PHYS 211 rooms have 6–8 tables. Adjust up or down to match this room.</div>
       </div>
-
-      <div class="form-row">
-        <label class="form-label">Students per table</label>
-        <div class="stepper">
-          <button type="button" class="stepper-btn" onclick="stepStudentsSetup(-1)">−</button>
-          <input type="number" id="setup-student-count" class="stepper-input" value="4" min="0" max="10" readonly>
-          <button type="button" class="stepper-btn" onclick="stepStudentsSetup(1)">+</button>
-        </div>
-        <div class="field-hint">Starting number at every table. You can change individual tables during the observation with the − / + on each table.</div>
-      </div>
     </div>
 
     <div class="setup-notice" id="setup-warning" style="display:none;"></div>
@@ -126,7 +116,7 @@
       <div class="panel-header">
         <div>
           <h2>Where is the TA right now?</h2>
-          <p>Tap a table (or anywhere in its area), the podium, or the front of the room each time the TA moves. Tap a student's square when they raise a hand, and tap it again when it goes down. Use − / + on each table to change its seats.</p>
+          <p>Tap a table (or anywhere in its area), the podium, or the front of the room each time the TA moves. Drag the podium to match the room.</p>
         </div>
         <div class="table-controls">
           <button type="button" class="tbl-btn" onclick="stepTablesLive(-1)" aria-label="Remove a table">−</button>
@@ -143,7 +133,7 @@
 
       <div class="map-log-wrap">
         <div class="map-log-header">
-          <span><span id="obs-pos-count">0 positions logged</span> <span class="hands-up-count" id="obs-hands-count"></span></span>
+          <span id="obs-pos-count">0 positions logged</span>
           <button class="mini-btn" onclick="undoLastPosition()">Undo last</button>
         </div>
         <div class="map-log" id="obs-pos-log"></div>
@@ -228,7 +218,7 @@
     <button class="btn-secondary big" onclick="newObservation()">Start another observation</button>
 
     <div class="auth-footer">
-      CSV includes checklist responses, qualitative comments, the table-position log, and total observation time. The CSV also has a student hand-raise log with where the TA was when each hand went up and down. The PNG shows the room map: color shows when something happened (red = start → purple = end) for both TA positions (circles) and hand raises (squares); size shows how long. Each hand raise is its own square inside that student's seat. Save them to your Files app or email them to the research coordinator.
+      CSV includes checklist responses, qualitative comments, the table-position log, and total observation time. The PNG plots every logged position on the room map — dot size shows how long the TA stood there, dot color shows the order (red → purple). Save them to your Files app or email them to the research coordinator.
     </div>
   </div>
 </div>
