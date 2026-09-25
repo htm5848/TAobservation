@@ -190,12 +190,6 @@ h1, h2, h3, p { margin: 0; }
 
 .obs-timer-wrap { display: flex; align-items: center; gap: 10px; }
 .obs-timer { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: 0.02em; min-width: 68px; text-align: right; }
-.timer-btn {
-  background: rgba(255,255,255,0.14); color: #fff; border: none; border-radius: 8px;
-  font-family: var(--sans); font-size: 12px; font-weight: 600; padding: 9px 14px; cursor: pointer;
-  min-height: var(--tap-min);
-}
-.timer-btn:active { background: rgba(255,255,255,0.24); }
 
 .btn-end {
   background: var(--orange); color: #fff; border: none; border-radius: 9px;

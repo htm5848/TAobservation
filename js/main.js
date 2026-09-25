@@ -240,7 +240,6 @@ function startObservation() {
   $("obs-title").textContent = `${section} · ${ta}`;
   $("obs-sub").textContent = `Observer ${currentNetID} · ${formatDateNice(date)}`;
   $("map-table-count").value = n;
-  $("obs-timer-btn").textContent = "Pause";
   $("obs-comment-best").value = "";
   $("obs-comment-improve").value = "";
   $("obs-overall-comments").value = "";
@@ -266,23 +265,6 @@ function formatDateNice(isoDate) {
 /* ── Timer ──────────────────────────────────────────────────────────────── */
 function tick() {
   $("obs-timer").textContent = formatTime(currentElapsedSeconds());
-}
-
-function toggleObsTimer() {
-  if (!obsSession) return;
-  const btn = $("obs-timer-btn");
-  if (obsSession.timerRunning) {
-    obsSession.accumMs += Date.now() - obsSession.segmentStart;
-    obsSession.segmentStart = null;
-    obsSession.timerRunning = false;
-    btn.textContent = "Resume";
-  } else {
-    obsSession.segmentStart = Date.now();
-    obsSession.timerRunning = true;
-    btn.textContent = "Pause";
-  }
-  tick();
-  autosave();
 }
 
 /* ── Pages (Observe / Comments) ─────────────────────────────────────────── */
@@ -977,9 +959,11 @@ function tryResume() {
   if (!resume) { clearAutosave(); return; }
 
   obsSession = saved;
-  if (obsSession.segmentStart) obsSession.accumMs += Date.now() - obsSession.segmentStart;
-  obsSession.segmentStart = null;
-  obsSession.timerRunning = false;
+  // The clock always runs: count the time since the last save (including
+  // while the page was closed) and keep going.
+  if (obsSession.timerRunning && obsSession.segmentStart) obsSession.accumMs += Date.now() - obsSession.segmentStart;
+  obsSession.segmentStart = Date.now();
+  obsSession.timerRunning = true;
   currentNetID = obsSession.netid;
 
   $("setup-observer-label").textContent = "Observer: " + currentNetID;
@@ -989,12 +973,13 @@ function tryResume() {
   $("obs-comment-best").value = obsSession.bestComments || "";
   $("obs-comment-improve").value = obsSession.improveComments || "";
   $("obs-overall-comments").value = obsSession.overallComments || "";
-  $("obs-timer-btn").textContent = "Resume";
 
   showScreen("screen-observe");
   renderChecklist();
   renderPosLog();
   showObsPage("observe");
+  clearInterval(tickHandle);
+  tickHandle = setInterval(tick, 1000);
   tick();
   autosave();
 }
