@@ -307,7 +307,7 @@ function computeMapLayout(tables, rect) {
   const areaX = 1, areaW = 98;
   const areaY = (100 / rect.height) * 100;          // leave ~100px up front for the label + podium
   const areaH = 99 - areaY;
-  const cols = n <= 4 ? 2 : n <= 9 ? 3 : 4;
+  const cols = 2;                                   // two tables per row, matching the PHYS 211 rooms
   const rows = Math.ceil(n / cols);
   const cellW = areaW / cols, cellH = areaH / rows;
   const w = cellW * 0.45;
@@ -328,6 +328,7 @@ function renderObsMap() {
   if (!canvas || !obsSession) return;
   const rect = canvas.getBoundingClientRect();
   if (!rect.width || !rect.height) return;   // canvas hidden (Comments page)
+  obsSession.mapPx = { w: rect.width, h: rect.height };   // lets the PNG place the front strip/podium in px
   canvas.querySelectorAll(".map-zone, .map-table-node, .map-landmark-node").forEach(n => n.remove());
 
   // Podium (draggable). Default: front-left, under the label strip.
@@ -342,8 +343,9 @@ function renderObsMap() {
   canvas.appendChild(podium);
   attachPodiumDrag(podium, pos, () => {
     const r = canvas.getBoundingClientRect();
-    logAt(pos.x + (podium.offsetWidth / 2) / r.width * 100,
-          pos.y + (podium.offsetHeight / 2) / r.height * 100, "At the podium", "Podium");
+    const cy = pos.y + (podium.offsetHeight / 2) / r.height * 100;
+    logAt(pos.x + (podium.offsetWidth / 2) / r.width * 100, cy, "At the podium", "Podium",
+          { yPx: cy / 100 * r.height });
   });
 
   // Tables (fixed)
@@ -356,9 +358,12 @@ function renderObsMap() {
     zone.addEventListener("click", e => {
       e.stopPropagation();
       const r = canvas.getBoundingClientRect();
-      const x = Math.round((e.clientX - r.left) / r.width * 100), y = Math.round((e.clientY - r.top) / r.height * 100);
+      const xp = (e.clientX - r.left) / r.width * 100, yp = (e.clientY - r.top) / r.height * 100;
+      const x = Math.round(xp), y = Math.round(yp);
       drawDot(x, y, obsSession.positions.length + 1);
-      addPositionLog(`Near Table ${t.id}`, `Table ${t.id}`, x, y, t.id);
+      // Also keep where in the table's area the tap was, so the PNG puts it in the same area
+      addPositionLog(`Near Table ${t.id}`, `Table ${t.id}`, x, y, t.id,
+        { zone: t.id, u: (xp - t.zone.x) / t.zone.w, v: (yp - t.zone.y) / t.zone.h });
     });
     canvas.appendChild(zone);
 
@@ -371,7 +376,7 @@ function renderObsMap() {
     node.innerHTML = `<div class="t-label">TABLE</div><div class="t-num">${t.id}</div>`;
     node.addEventListener("click", e => {
       e.stopPropagation();
-      logAt(t.x + t.w / 2, t.y + t.h / 2, `Table ${t.id}`, `Table ${t.id}`);
+      logAt(t.x + t.w / 2, t.y + t.h / 2, `Table ${t.id}`, `Table ${t.id}`, { table: t.id });
     });
     canvas.appendChild(node);
   });
@@ -428,13 +433,13 @@ function nearestTableToPct(xPct, yPct, rect) {
 }
 
 /* Tap on a table or the podium: log the exact center of that object. */
-function logAt(xPct, yPct, desc, near) {
+function logAt(xPct, yPct, desc, near, anchor) {
   if (!obsSession) return;
   const x = Math.round(xPct), y = Math.round(yPct);
   const rect = $("obs-canvas").getBoundingClientRect();
   const nearestTable = nearestTableToPct(x, y, rect);
   drawDot(x, y, obsSession.positions.length + 1);
-  addPositionLog(desc, near, x, y, nearestTable ? nearestTable.id : null);
+  addPositionLog(desc, near, x, y, nearestTable ? nearestTable.id : null, anchor);
 }
 
 /* Tap on open floor: log where they tapped, or "Near Table N" if close to one. */
@@ -451,7 +456,8 @@ function logObsPosition(event) {
   const desc = near ? `Near Table ${near.id}` : `Open area (${x}%, ${y}%)`;
 
   drawDot(x, y, obsSession.positions.length + 1);
-  addPositionLog(desc, near ? `Table ${near.id}` : "", x, y, nearestTable ? nearestTable.id : null);
+  addPositionLog(desc, near ? `Table ${near.id}` : "", x, y, nearestTable ? nearestTable.id : null,
+    { yPx: yPct / 100 * rect.height });
 }
 
 function drawDot(xPct, yPct, num) {
@@ -473,12 +479,17 @@ function redrawDots() {
   obsSession.positions.forEach((p, i) => drawDot(p.x, p.y, i + 1));
 }
 
-function addPositionLog(desc, nearTable, xPct, yPct, nearestTableId) {
+/* `anchor` records the tap relative to what was tapped — {zone, u, v} (fraction
+   across/down a table's area), {table} (table centre) or {yPx} (px from the top,
+   for the front strip) — because the live map's height varies by device while
+   the PNG's doesn't; placing dots by anchor keeps them in the right area. */
+function addPositionLog(desc, nearTable, xPct, yPct, nearestTableId, anchor) {
   obsSession.positions.push({
     wallTime: new Date().toLocaleTimeString(),
     elapsedSec: currentElapsedSeconds(),
     desc, nearTable, x: xPct, y: yPct,
     nearestTableId: nearestTableId || null,
+    anchor: anchor || null,
   });
   renderPosLog();
   autosave();
@@ -625,6 +636,16 @@ function positionDurations(s) {
   });
 }
 
+/* Where a logged position goes on the PNG's map (see addPositionLog's anchor). */
+function pngPoint(p, tables, W, plotH) {
+  const a = p.anchor || {};
+  const t = tables.find(tb => tb.id === (a.zone || a.table));
+  if (t && a.zone) return { x: (t.zone.x + a.u * t.zone.w) / 100 * W, y: (t.zone.y + a.v * t.zone.h) / 100 * plotH };
+  if (t && a.table) return { x: (t.x + t.w / 2) / 100 * W, y: (t.y + t.h / 2) / 100 * plotH };
+  if (a.yPx != null) return { x: p.x / 100 * W, y: a.yPx };
+  return { x: p.x / 100 * W, y: p.y / 100 * plotH };
+}
+
 function buildPositionMapImage(s) {
   const W = 1000, headerH = 64, legendH = 64, plotH = 640;
   const H = headerH + plotH + legendH;
@@ -696,7 +717,8 @@ function buildPositionMapImage(s) {
 
   if (s.podium && s.podium.pos) {
     const pw = 92, ph = 46;
-    const x = s.podium.pos.x / 100 * W, y = s.podium.pos.y / 100 * plotH;
+    const x = s.podium.pos.x / 100 * W;
+    const y = s.mapPx ? s.podium.pos.y / 100 * s.mapPx.h : s.podium.pos.y / 100 * plotH;
     ctx.fillStyle = "#F0ECFC";
     ctx.strokeStyle = "#C9BCF4";
     ctx.lineWidth = 2;
@@ -725,7 +747,7 @@ function buildPositionMapImage(s) {
       const f = (Math.sqrt(d) - Math.sqrt(minDur)) / (Math.sqrt(maxDur) - Math.sqrt(minDur));
       return minR + f * (maxR - minR);
     };
-    const pts = s.positions.map(p => ({ x: p.x / 100 * W, y: p.y / 100 * plotH }));
+    const pts = s.positions.map(p => pngPoint(p, tables, W, plotH));
 
     // Faint path connecting positions in order, so the rotation is legible
     ctx.strokeStyle = "rgba(26,24,20,0.18)";
