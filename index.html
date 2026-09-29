@@ -213,7 +213,8 @@
     <div class="auth-sub" id="done-summary">—</div>
 
     <button class="btn-primary big" onclick="downloadCSVAgain()">⬇ Download CSV</button>
-    <button class="btn-secondary big" onclick="downloadImageAgain()">⬇ Download position map (PNG)</button>
+    <div class="done-ios-note hidden" id="done-ios-note">On iPad, the CSV downloads first — tap the button below to save the position map too.</div>
+    <button class="btn-secondary big" id="done-png-btn" onclick="downloadImageAgain()">⬇ Download position map (PNG)</button>
     <button class="btn-secondary big" onclick="newObservation()">Start another observation</button>
 
     <div class="auth-footer">

@@ -791,19 +791,31 @@ function buildPositionMapImage(s) {
   return canvas;
 }
 
-function downloadImage(dataUrl, filename) {
+/* Saved as a Blob (object URL), not a data: URL — iPad Safari opens data:
+   URLs in a tab instead of downloading them. */
+function downloadImage(blob, filename) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = dataUrl;
+  a.href = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/* iPhone/iPad (iPadOS reports itself as a Mac with a touch screen). Safari
+   there allows only ONE download per tap, so the CSV downloads on End &
+   Export and the PNG gets its own tap on the done screen. */
+function isIOSDevice() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 0);
 }
 
 /* ── End & export ──────────────────────────────────────────────────────── */
 let lastCSV = null;
 let lastFilename = null;
-let lastImageDataUrl = null;
+let lastImageBlob = null;
 let lastImageFilename = null;
 
 /* Before exporting, nudge the observer to fill in the Comments page — it's
@@ -856,9 +868,16 @@ function finishObservation() {
   lastFilename = buildFilename(obsSession);
   downloadCSV(lastCSV, lastFilename);
 
-  lastImageDataUrl = buildPositionMapImage(obsSession).toDataURL("image/png");
+  // Built now so the done-screen button can save it instantly within its tap.
+  lastImageBlob = null;
   lastImageFilename = buildFilename(obsSession).replace(/\.csv$/i, "_position_map.png");
-  downloadImage(lastImageDataUrl, lastImageFilename);
+  const ios = isIOSDevice();
+  buildPositionMapImage(obsSession).toBlob(blob => {
+    lastImageBlob = blob;
+    if (!ios) downloadImage(blob, lastImageFilename);
+  }, "image/png");
+  $("done-ios-note").classList.toggle("hidden", !ios);
+  $("done-png-btn").className = ios ? "btn-primary big" : "btn-secondary big";
 
   clearAutosave();
 
@@ -876,7 +895,7 @@ function downloadCSVAgain() {
 }
 
 function downloadImageAgain() {
-  if (lastImageDataUrl) downloadImage(lastImageDataUrl, lastImageFilename);
+  if (lastImageBlob) downloadImage(lastImageBlob, lastImageFilename);
 }
 
 function newObservation() {

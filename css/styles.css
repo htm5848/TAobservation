@@ -351,6 +351,12 @@ h1, h2, h3, p { margin: 0; }
 .map-log-desc { color: var(--ink-2); flex: 1; }
 .map-log-empty { padding: 16px; text-align: center; color: var(--ink-3); font-size: 12.5px; }
 
+/* Done screen: iPad hint that the PNG needs its own tap */
+.done-ios-note {
+  background: var(--orange-lt); border: 1px solid var(--orange-md); color: var(--ink-2);
+  border-radius: var(--radius-sm); padding: 10px 12px; font-size: 13px; line-height: 1.45; margin-top: 12px;
+}
+
 /* ── Comments reminder modal ───────────────────────────────────────────── */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 100;
