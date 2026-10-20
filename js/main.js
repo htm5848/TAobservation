@@ -122,13 +122,22 @@ function currentElapsedSeconds() {
   return Math.round(ms / 1000);
 }
 
+function saveNow() {
+  clearTimeout(autosaveTimer);
+  if (!obsSession || !obsSession.active) return;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obsSession)); } catch (e) { /* storage unavailable — non-fatal */ }
+}
+
 function autosave() {
   if (!obsSession) return;
   clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obsSession)); } catch (e) { /* storage unavailable — non-fatal */ }
-  }, 350);
+  autosaveTimer = setTimeout(saveNow, 350);
 }
+
+// Flush any pending autosave the moment the page is hidden or closed (iPad
+// Safari can drop a backgrounded tab before the 350ms debounce fires).
+window.addEventListener("pagehide", saveNow);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") saveNow(); });
 
 function clearAutosave() {
   try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }

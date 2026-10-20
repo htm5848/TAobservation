@@ -186,7 +186,7 @@ h1, h2, h3, p { margin: 0; }
 }
 .obs-topbar-info { flex: 1; min-width: 0; }
 .obs-topbar-title { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.obs-topbar-sub { font-size: 11px; color: rgba(255,255,255,0.65); font-family: var(--mono); margin-top: 2px; }
+.obs-topbar-sub { font-size: 11px; color: rgba(255,255,255,0.65); font-family: var(--mono); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .obs-timer-wrap { display: flex; align-items: center; gap: 10px; }
 .obs-timer { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: 0.02em; min-width: 68px; text-align: right; }
